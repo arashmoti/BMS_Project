@@ -1,0 +1,88 @@
+// {
+//     // See https://go.microsoft.com/fwlink/?LinkId=733558
+//     // for the documentation about the tasks.json format
+//     "version": "0.1.0",
+//     "name": "make",
+//     "isShellCommand": true,
+//     "showOutput": "always",
+//     "problemMatcher": {
+//         "owner": "cpp",
+//         "fileLocation": [
+//             "relative",
+//             "${workspaceRoot}/mbed-os"
+//         ],
+//         "pattern": {
+//             "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+//             "file": 1,
+//             "line": 2,
+//             "column": 3,
+//             "severity": 4,
+//             "message": 5
+//         }
+//     },
+//     "args": [
+//         "-j"
+//     ],
+//     "linux": {
+//         "command": "make"
+//     },
+//     "osx": {
+//         "command": "make"
+//     },
+//     "windows": {
+//         "command": "make.exe"
+//     }
+// },
+{
+    "version": "2.0.0",
+    "name": "mbed",
+    "tasks": [
+        {
+            "label": "build_debug",
+            "type": "shell",
+            "problemMatcher": {
+                "owner": "cpp",
+                "fileLocation": [
+                    "relative",
+                    "${workspaceRoot}/mbed-os"
+                ],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "args": [
+                "compile",
+                "--profile=debug",
+                "-t",
+                "GCC_ARM",
+                "-m",
+                "NUCLEO_G474RE"
+            ],
+            "linux": {
+                "command": "mbed"
+            },
+            "osx": {
+                "command": "mbed"
+            },
+            "windows": {
+                "command": "mbed"
+            },
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "clear": true
+            }
+        }
+    ]
+}

@@ -1,0 +1,69 @@
+Altium Designer Pick and Place Locations
+C:\Users\Public\Documents\Altium\DC-DC_Converter\Project Outputs\Pick Place for PCB1.txt
+
+========================================================================================================================
+File Design Information:
+
+Date:       12.06.24
+Time:       16:44
+Revision:   f0ca87721263e52de8197121d50a1cea70102917
+Variant:    No variations
+Units used: mil
+
+Designator Comment            Layer       Footprint                                  Center-X(mil) Center-Y(mil) Rotation Description                                     
+R21        RC1206JR-070RL     BottomLayer RES_1206_3216                              1299.213      218.504       270      "RES 0 OHM JUMPER 1/4W 1206"                    
+L2         RLB0914-681KL      TopLayer    RLB0914681KL                               539.370       1758.858      270      Inductor                                        
+R20        RC1206JR-0747RL    BottomLayer RES_1206_3216                              2244.095      980.319       270      "RES 47 OHM 5% 1/4W 1206"                       
+TR1        FlybackTransformer TopLayer    FlybackTransformer                         1600.787      1344.882      90       "B66317G0160X187 GAPPED N87 CORE"               
+D8         SMBJ24CD-M3/I      BottomLayer DO214AA_SMB                                2892.762      1466.535      90       "TVS DIODE 24V 38.4V DO214AA"                   
+R19        RC1206JR-070RL     BottomLayer RES_1206_3216                              2027.559      826.771       90       "RES 0 OHM JUMPER 1/4W 1206"                    
+R18        RC1206JR-0747RL    BottomLayer RES_1206_3216                              2145.669      419.296       0        "RES 47 OHM 5% 1/4W 1206"                       
+R17        PA1206FRE070R01Z   BottomLayer RES_1206_3216                              2854.331      807.087       180      "RES 0.01 OHM 1% 1/4W 1206"                     
+R16        RC1206JR-073KL     BottomLayer RES_1206_3216                              1122.047      354.331       180      "RES 3K OHM 5% 1/4W 1206"                       
+R15        RC1206FR-0710KL    BottomLayer RES_1206_3216                              2391.733      708.662       270      "RES 10K OHM 1% 1/4W 1206"                      
+R14        RC1206JR-7W22RL    BottomLayer RES_1206_3216                              2618.110      1102.362      90       "RES 22 OHM 5% 1/2W 1206"                       
+R13        RC1206JR-0747RL    BottomLayer RES_1206_3216                              922.969       354.331       0        "RES 47 OHM 5% 1/4W 1206"                       
+R12        RC1206JR-07180KL   BottomLayer RES_1206_3216                              2391.732      501.969       270      "RES 180K OHM 5% 1/4W 1206"                     
+R11        RC1206JR-072ML     BottomLayer RES_1206_3216                              679.134       157.480       180      "RES 2M OHM 5% 1/4W 1206"                       
+R10        RC1206FR-071M8L    BottomLayer RES_1206_3216                              482.284       157.480       180      "RES 1.8M OHM 1% 1/4W 1206"                     
+R9         RC1206JR-070RL     BottomLayer RES_1206_3216                              2325.788      1841.041      0        "RES 0 OHM JUMPER 1/4W 1206"                    
+Q1         FDD770N15A         BottomLayer FDD770N15A                                 2439.488      1028.543      180      Transistor                                      
+J4         SSW-101-03-T-S     TopLayer    SAMTEC_SSW-101-03-T-S                      2950.833      1185.039      0        "CONN RCPT 1POS TIN PCB"                        
+J3         SSW-101-03-T-S     TopLayer    SAMTEC_SSW-101-03-T-S                      236.220       1771.653      0        "CONN RCPT 1POS TIN PCB"                        
+J2         SSW-101-03-T-S     TopLayer    SAMTEC_SSW-101-03-T-S                      2952.756      1791.339      180      "CONN RCPT 1POS TIN PCB"                        
+J1         SSW-101-03-T-S     TopLayer    SAMTEC_SSW-101-03-T-S                      251.453       433.071       0        "CONN RCPT 1POS TIN PCB"                        
+D7         MMSZ5242B-7-F      BottomLayer SOD-123                                    1181.102      206.693       270      "DIODE ZENER 12V 500MW SOD123"                  
+D6         US1ML-TP           BottomLayer DO214AC_SMA                                974.409       177.165       0        "DIODE GEN PURP 1KV 1A DO214AC"                 
+D5         US1ML-TP           BottomLayer DO214AC_SMA                                2765.748      1043.307      90       "DIODE GEN PURP 1KV 1A DO214AC"                 
+D4         US1ML-TP           BottomLayer DO214AC_SMA                                984.252       1614.173      180      "DIODE GEN PURP 1KV 1A DO214AC"                 
+D3         SK320ATR           BottomLayer DO214AC_SMA                                2331.693      1703.246      0        "DIODE SCHOTTKY 200V 3A SMA"                    
+C17        CL31B225KBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      2145.669      541.339       0        "CAP CER 2.2UF 50V X7R 1206"                    
+C16        CL31A106MBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      1318.898      433.071       90       "CAP CER 10UF 50V X5R 1206"                     
+C15        CL10B102KB8NNNC    BottomLayer CAP_0603_1608                              2041.334      673.228       270      "CAP CER 1000PF 50V X7R 0603"                   
+C14        CL31A106MBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      2555.118      1466.435      90       "CAP CER 10UF 50V X5R 1206"                     
+C13        CL31A106MBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      885.827       1791.339      270      "CAP CER 10UF 50V X5R 1206"                     
+C12        CL31B225KBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      2656.457      1466.435      90       "CAP CER 2.2UF 50V X7R 1206"                    
+C11        CL31A106MBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      2752.008      1466.435      90       "CAP CER 10UF 50V X5R 1206"                     
+C10        885012208072       BottomLayer CAP_1206_3216_-_0.8MM                      2500.000      708.662       270      "CAP CER 330PF 50V X7R 1206"                    
+C9         CL31B225KBHNNNE    BottomLayer CAP_1206_3216_-_0.8MM                      2700.748      708.662       270      "CAP CER 2.2UF 50V X7R 1206"                    
+C8         UVY1V331MPD1TD     TopLayer    CAP_TH_ALUM_ELEC_D10.00mm_S5.00mm_H14.00mm 2416.339      1466.535      90       "CAP ALUM 330UF 20% 35V RADIAL"                 
+C7         CL10B102KB8NNNC    BottomLayer CAP_0603_1608                              2618.110      944.882       270      "CAP CER 1000PF 50V X7R 0603"                   
+C6         F471K33Y5RP6UK5R   TopLayer    F471K33Y5RP6UK5R                           1673.228      139.764       0        Capacitor                                       
+RV1        MOV-07D781KK       TopLayer    MOV07D781KK                                0.000         1122.047      270      Varistor                                        
+R8         RMCF1206FT100K     BottomLayer RES_1206_3216                              610.236       1377.953      270      "RES 100K OHM 1% 1/4W 1206"                     
+R7         RMCF1206FT100K     BottomLayer RES_1206_3216                              472.441       1377.953      270      "RES 100K OHM 1% 1/4W 1206"                     
+R6         RC1206JR-7W22RL    BottomLayer RES_1206_3216                              1574.803      1200.787      0        "RES 22 OHM 5% 1/2W 1206"                       
+R5         RC1206JR-7W22RL    BottomLayer RES_1206_3216                              1574.803      1318.898      0        "RES 22 OHM 5% 1/2W 1206"                       
+R4         RC1206FR-07680KL   BottomLayer RES_1206_3216                              1407.480      1122.047      270      "RES 680K OHM 1% 1/4W 1206"                     
+R3         RMCF1206FT100K     BottomLayer RES_1206_3216                              610.236       944.882       270      "RES 100K OHM 1% 1/4W 1206"                     
+R2         RMCF1206FT100K     BottomLayer RES_1206_3216                              472.441       944.882       270      "RES 100K OHM 1% 1/4W 1206"                     
+R1         RMCF2512JT10R0     BottomLayer RES_2512_6432                              0.000         631.239       90       "RES 10 OHM 5% 1W 2512"                         
+L1         RLB0914-681KL      TopLayer    RLB0914681KL                               551.181       511.811       0        Inductor                                        
+IC1        INN3696C-H606-TL   BottomLayer INN3696CH606TL                             1683.071      511.811       270      "AC/DC Converters 35W 230VAC 30W 15mW 900V FET" 
+D2         US1ML-TP           BottomLayer DO214AC_SMA                                1299.213      1299.213      0        "DIODE GEN PURP 1KV 1A DO214AC"                 
+D1         US1ML-TP           BottomLayer DO214AC_SMA                                255.905       649.606       0        "DIODE GEN PURP 1KV 1A DO214AC"                 
+C5         ESK106M400AH2EA    TopLayer    CAP_TH_ALUM_ELEC_D10.00mm_S5.00mm_H17.00mm 767.716       1377.953      270      "CAP ALUM 10UF 20% 400V THRUHOLE"               
+C4         ESK106M400AH2EA    TopLayer    CAP_TH_ALUM_ELEC_D10.00mm_S5.00mm_H17.00mm 334.646       1377.953      270      "CAP ALUM 10UF 20% 400V THRUHOLE"               
+C3         ESK106M400AH2EA    TopLayer    CAP_TH_ALUM_ELEC_D10.00mm_S5.00mm_H17.00mm 767.716       944.882       270      "CAP ALUM 10UF 20% 400V THRUHOLE"               
+C2         ESK106M400AH2EA    TopLayer    CAP_TH_ALUM_ELEC_D10.00mm_S5.00mm_H17.00mm 334.646       944.882       270      "CAP ALUM 10UF 20% 400V THRUHOLE"               
+C1         C1206X222KGRAC7800 BottomLayer CAP_1206_3216_-_0.8MM                      1574.803      1072.835      180      "CAP CER 2200PF 2KV X7R 1206"                   

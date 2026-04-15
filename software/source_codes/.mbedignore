@@ -1,0 +1,15 @@
+bms_viewer_v2/*
+bms_viewer_tool/*
+dist/*
+__pycache__/*
+.git/*
+.vscode/*
+docs/*
+extract_bms_templates.py
+sd_analyzer_fix.diff
+merged_plans.md
+BMS_TERMINAL_REPORTING_ANALYSIS.md
+FIX_PLAN.md
+REFACTORING_PLAN.md
+TASKS.md
+TERMINAL_REPORTING_IMPLEMENTATION.md

@@ -1,0 +1,214 @@
+#ifndef __MEASUREMENT__H_
+#define __MEASUREMENT__H_
+
+#include "measurement_params.h"
+#include "io_periph_defs.h"
+#include "Settings.h"
+#include "hw_measurement_base.h"
+#include "lib_buffer.h"
+#include "operation_params.h"
+
+#include "PinNames.h"
+#include "Thread.h"
+#include "ThisThread.h"
+#include "Callback.h"
+#include "Mutex.h"
+#include "Timer.h"
+#include "Ticker.h"
+#include "Mail.h"
+
+#include <cstdarg>
+#include <cstdint>
+#include <vector>
+#include "rtos/Mutex.h"
+
+extern rtos::Mutex g_packInfoMutex;
+
+// Consolidated balancing state - replaces scattered static locals in subTaskPackBalancing()
+struct BalanceState {
+    // Idle detection state
+    bool idleArmed = false;
+    uint32_t idleStartMs = 0;
+    
+    // Balance permission
+    bool allowBalance = false;
+    
+    // Thermal management
+    bool thermalPaused = false;
+    
+    // Time-sliced cycle state
+    bool cycleInitialized = false;
+    bool oddCycle = true;           // Odd/Even parity for cell selection
+    uint32_t cycleStartMs = 0;
+    uint32_t cycleTimeMs = 0;
+    bool isMeasurePhase = true;
+    bool isActivePhase = false;
+    bool isQuietStopPhase = false;
+    bool freezeMeasurements = false;
+    bool periodicPauseActive = false;
+    
+    // Cached clean voltage readings
+    uint16_t cachedVmin = 0;
+    uint16_t cachedVmax = 0;
+    uint16_t cachedModuleVmin[NoOfCELL_MONITORS_POSSIBLE_ON_BMS] = {0};
+    uint16_t cachedModuleVmax[NoOfCELL_MONITORS_POSSIBLE_ON_BMS] = {0};
+    bool cachedModulesValid = false;
+
+    // Last selected bleed map (used for masking artifacts)
+    bool bleedMaskValid = false;
+    bool bleedMask[NoOfCELL_POSSIBLE_ON_CHIP * NoOfCELL_MONITORS_POSSIBLE_ON_BMS] = {false};
+
+    // Cached balancing-safe extremes (masked min/max) captured in clean window
+    uint16_t cachedBalVmin = 0;
+    uint16_t cachedBalVmax = 0;
+    bool cachedBalValid = false;
+    
+    // Discharge cooldown
+    uint32_t lastDischargeMs = 0;
+    
+    // EOC state
+    uint8_t eocCycleCount = 0;
+    bool eocLatched = false;
+    
+    // Throttle/Ramp state
+    bool throttleActive = false;
+    bool rampingActive = false;
+    uint32_t rampStartMs = 0;
+    uint16_t rampLimitX10mA = 0;
+};
+
+class Measurement
+{
+
+public:
+  // Measurement(Mail<st_mailPowerElecPackInfoConfig, BQ_MEASUREMENT_COMMS_MAIL_SIZE> &mailPowerElecBox, HwMeasurementBase &_hwMeasurement);
+  Measurement(Mail<st_mailPowerElecPackInfoConfig, BQ_MEASUREMENT_COMMS_MAIL_SIZE> &mailPowerElecBox,
+              Mail<st_mail_cell_voltages_t, LOGGING_CELL_VOLTAGE_MAIL_SIZE> &mailCellVoltageBox,
+              HwMeasurementBase &_hwMeasurement);
+  virtual ~Measurement();
+
+  void startThread(void);
+  void init(st_generalConfig *genConfig, st_powerElecPackInfoConfig *powerElecPackInfoConfig);
+
+private:
+  void measurementThread(void);
+  uint8_t timerDelay1ms(uint32_t *last, uint32_t ticks);
+
+  void subTaskVoltageProtectionWatch(void);
+  void subTaskTemperatureWatch(void);
+  void subTaskCheckPackSOA(void);
+  void subTaskCheckWarning(void);
+  void subTaskSocCalculation(void);
+  void subTaskPackStateDetermination(void);
+  void subTaskPackBalancing(void);
+  void subTaskInverterValuesReporting(void);
+  void subTaskCurrentWatch(void);
+  void subTaskInitialSocEstimation(void);
+  void subTaskCheckInverterResponse(void);
+  void subTaskRecalibrateSoc(void);
+  void subTaskCheckBqCommunication(void); // Declaration for the new watchdog function
+  void subTaskOvRecoverySupervisor(void);
+  void updateBalancePhase(bool logTransitions);
+  void updatePeriodicBalancePause(void);
+  bool isBalanceMeasureWindow() const;
+
+  void subTaskModuleVoltageWatch(void);
+  void subTaskModuleTemperatureWatch(void);
+  void subTaskMeasurementModulePower(void);
+  void subTaskMeasurementFirstSocPerPack(void);
+
+  // void subTaskSetInitialSoc(void);
+  void subTaskSetInitialSoc(bool from_recalibration = false);
+
+  void subTaskCellsVoltageWatch(void);
+  void subTaskAllModulePackTemperatureWatch(void);
+  void subTaskCalculateAllCellsStat(void);
+  void subTaskSysPowerWatch(void);
+  void subTaskDatetimeWatch(void);
+  void subTaskChipsetErrorWatch(void);
+  void subTaskPackGeneralWatch(void);
+  void subTaskBuzzer(void);
+
+  void subTaskProtectionsControllerMechanism(void);
+  void subTaskCellOperationStateWatch(void);
+  void subTaskCellVoltagesProtectionController(void);
+  // Highlight: Added declaration for the new SOC saving function.
+  void subTaskHandleSocSaveRequest(void);
+
+  uint16_t getDvMvCleanAware() const;
+
+private:
+  rtos::Thread m_measurementThreadVar;
+  mbed::Timer m_measurementManagerTim;
+  rtos::Mutex m_mutex;
+  Mail<st_mailPowerElecPackInfoConfig, BQ_MEASUREMENT_COMMS_MAIL_SIZE> &m_mailPowerElecBox;
+  Mail<st_mail_cell_voltages_t, LOGGING_CELL_VOLTAGE_MAIL_SIZE> &m_mailCellVoltageBox;
+
+  HwMeasurementBase &m_hwMeasurement;
+
+  st_powerElecPackInfoConfig *m_ptrPowerElecPackInfoConfig;
+  st_generalConfig *m_ptrGenConfig;
+
+  uint16_t m_u16HardOverTemperatureFlags;
+
+  uint32_t m_u32ChargeRetryLastTick;
+  uint32_t m_u32DisChargeLowCurrentRetryLastTick;
+  uint32_t m_u32DisChargeHighCurrentRetryLastTick;
+  uint32_t m_u32TempMeasureDelayLastTick;
+  uint32_t m_u32ChargeCurrentDetectionLastTick;
+  uint32_t m_u32BalanceModeActiveLastTick;
+  uint32_t m_u32SOAChargeChangeLastTick;
+  uint32_t m_u32SOADisChargeChangeLastTick;
+  uint8_t m_u8SoftOverCurrentErrorCount;
+  bool m_bPowerElecAllowForcedOnState;
+
+  uint8_t m_u8arrMeasPartId[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  enCellBalanceProcessState m_u8arrMeasBalanceState[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  uint16_t cellVoltagesMeasIndividual[NoOfCELL_POSSIBLE_ON_CHIP * NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  int32_t tempValuesMeasIndividual[NoOfTEMP_POSSIBLE_ON_CHIP * NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  uint8_t balanceStateIndividual[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+
+  uint32_t m_u32StateOfChargeLargeCoulombTick;
+  uint32_t m_u32StateOfChargeStoreSoCTick;
+
+  float m_fFirstSoc;
+  float m_fRemainingCapacityAh;
+  bool m_bInitialSocSet;
+
+  // Highlight: Added a timestamp to track when the system enters an idle state.
+  uint32_t m_u32IdleStateEntryTimestamp;
+
+  bool m_bInitialSocEstimationComplete;
+  uint32_t m_u32VoltageStableTimestamp;
+  uint16_t m_u16LastCellVoltageMin;
+
+  // --- SOH & cycles (persisted & reported) ---
+  uint16_t m_u16SOH_mpermil; // 0..1000
+  uint32_t m_u32CycleCount;  // integer cycles
+
+  // Balancing/charge control latches
+  // REMOVED: bool m_preBalThrottleActive = false; // Dead code - declared but never used
+  uint32_t m_dvStopEligibleSince = 0;  // when DV first became <= kDV_STOP_mV (0 = not eligible)
+
+  // Commissioning mode state
+  bool m_commissioningActive = false;
+  bool m_commissioningStopActive = false;
+  bool m_commissioningUseLowCurrent = false;
+  uint16_t m_commissioningLastLimit = 0xFFFF;
+  uint16_t m_commissioningDvAtTrendStart_mV = 0;
+  uint32_t m_commissioningTrendStartMs = 0;
+  uint32_t m_commissioningDvStableStartMs = 0;
+  uint32_t m_commissioningFullChargeStartMs = 0;
+  
+  // SOC Dwell flag for inverter reporting (99.4% held for 10min -> report 100%)
+  bool m_bSocDwellReportAs100 = false;
+  
+  // Consolidated balancing state (replaces scattered static locals in subTaskPackBalancing)
+  BalanceState m_balanceState;
+  
+  // Balancing cycle phase: true = measuring (bleeders OFF), false = active (bleeders ON)
+  // Used to prevent corrupted min/max readings during active balancing
+  bool m_bBalanceMeasurePhase = true;
+};
+
+#endif // __MEASUREMENT_HANDLER__H_

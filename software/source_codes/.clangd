@@ -1,0 +1,54 @@
+CompileFlags:
+  Add:
+    # ARM Cortex-M target
+    - "-target=arm-none-eabi"
+    - "-mcpu=cortex-m4"
+    
+    # Include paths for the project
+    - "-I${workspaceFolder}"
+    - "-I${workspaceFolder}/mbed-os"
+    - "-I${workspaceFolder}/mbed-os/platform/include"
+    - "-I${workspaceFolder}/mbed-os/rtos/include"
+    - "-I${workspaceFolder}/mbed-os/drivers/include"
+    - "-I${workspaceFolder}/mbed-os/hal/include"
+    - "-I${workspaceFolder}/mbed-os/targets/TARGET_STM"
+    - "-I${workspaceFolder}/BQ79616Handler/Inc"
+    - "-I${workspaceFolder}/Measurement/Inc"
+    - "-I${workspaceFolder}/Configuration/Inc"
+    - "-I${workspaceFolder}/Common"
+    - "-I${workspaceFolder}/InterfaceCommHandler/Inc"
+    - "-I${workspaceFolder}/SerialHandler/Inc"
+    - "-I${workspaceFolder}/SdCardHandler/Inc"
+    - "-I${workspaceFolder}/EepromHandler/Inc"
+    - "-I${workspaceFolder}/ErrorHandler/Inc"
+    - "-I${workspaceFolder}/EffectHandler/Inc"
+    - "-I${workspaceFolder}/PowerHandler/Inc"
+    - "-I${workspaceFolder}/PowerStateHandler/Inc"
+    - "-I${workspaceFolder}/StateOfChargeHandler/Inc"
+    - "-I${workspaceFolder}/Operation/Inc"
+    - "-I${workspaceFolder}/Tasking/Inc"
+    - "-I${workspaceFolder}/CanHandler/Inc"
+    - "-I${workspaceFolder}/DatetimeHandler/Inc"
+    - "-I${workspaceFolder}/Logging/Inc"
+    - "-I${workspaceFolder}/HwMeasurementBase"
+    - "-I${workspaceFolder}/HwOperationBase"
+    - "-I${workspaceFolder}/HwLoggingBase"
+    - "-I${workspaceFolder}/HwErrorBase"
+    - "-I${workspaceFolder}/HwTaskingBase"
+    
+    # Standard mbed defines
+    - "-DMBED_CONF_PLATFORM_STDIO_BAUD_RATE=115200"
+    - "-DMBED_HEAP_STATS_ENABLED=1"
+    - "-DMBED_STACK_STATS_ENABLED=1"
+    - "-DTARGET_STM32L496RG"
+    
+  Remove:
+    # Remove flags that clangd doesn't understand
+    - "-mthumb"
+    - "-mfloat-abi=*"
+    - "-mfpu=*"
+
+Diagnostics:
+  Suppress:
+    # Suppress some false positives in embedded code
+    - "pp_file_not_found"  # Header not found (mbed paths are complex)

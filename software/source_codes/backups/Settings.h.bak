@@ -1,0 +1,1244 @@
+#ifndef __SETTINGS__H_
+#define __SETTINGS__H_
+
+#include "mbed.h"
+#include <cstdint>
+#include <vector>
+
+// you should add the mbed_app.json for printing the floatpoint
+//  "target.printf_lib": "minimal-printf",
+//   "platform.minimal-printf-enable-floating-point": true,
+//   "platform.minimal-printf-set-floating-point-max-decimals": 4,
+
+// #define LITHIUM_ION
+#define LITHIUM_IRON_PHOSPHATE
+#define OLED_ACTIVATION
+// #define IS_DEVELOPMENT
+// #define USE_PRECHARGE
+
+// TEMPORARY OVERRIDE: Set to 1 to force commissioning mode to be done/bypassed
+// Set to 0 to use normal EEPROM-based commissioning logic
+#define FORCE_COMMISSIONING_DONE 1
+
+// Set to 1 to completely disable balancing
+// Set to 0 to enable normal balancing logic
+#define DISABLE_BALANCING 0
+
+// Set to 1 to disable OCV-based SOC correction
+// Set to 0 to enable normal OCV correction
+#define DISABLE_OCV_CORRECTION 0
+
+// ONE-TIME: Set to 1 to force SOC to 90% and save to EEPROM on boot
+// IMPORTANT: Set back to 0 after flashing to avoid resetting SOC on every boot
+#define FORCE_SOC_90_PERCENT 0
+
+#define HW_VERSION 100 // PCBs version
+
+#define BQ_MEASUREMENT_COMMS_MAIL_SIZE 32
+#define NoOfPROTS_POSSIBLE_ON_SYS 10
+
+#define LOGGING_CELL_VOLTAGE_MAIL_SIZE 32
+
+// ########################################################################################################################################
+
+#define EEPROM_ERROR_INDEX_ADDRESS 400
+#define ERROR_START_ADDRESS 200
+#define SETTINGS_START_ADDRESS 0
+#define SETTINGS_STOP_ADDRESS 198
+#define EEPROM_MAPPED_VALUE 0xCA11
+
+// ########################################################################################################################################
+
+#define NoOfCELL_POSSIBLE_ON_CHIP 16
+#define NoOfTEMP_POSSIBLE_ON_CHIP 8
+#define NoOfCELL_MONITORS_POSSIBLE_ON_BMS 4
+#define NoOfTEMP_ACTIVE 8
+#define NoOfNTC_TYPE 2
+
+// ########################################################################################################################################
+
+#define PIN_STATE_ENABLE 1
+#define PIN_STATE_DISABLE 0
+
+// If your RGB LED is wired active-low (common anode), set to 1 to invert PWM
+#ifndef RGB_LED_ACTIVE_LOW
+#define RGB_LED_ACTIVE_LOW 0
+#endif
+
+// Power button input polarity: 1 = active-low (pressed pulls line low)
+#ifndef POWER_BTN_ACTIVE_LOW
+#define POWER_BTN_ACTIVE_LOW 0
+#endif
+
+// Enable PWM-based LED effects (fade/breathe). Default off to preserve legacy behavior
+#ifndef ENABLE_RGB_PWM_EFFECTS
+#define ENABLE_RGB_PWM_EFFECTS 0
+#endif
+
+// Balancing small-current guard (mA). Shared across modules.
+#ifndef BALANCING_MAX_CHARGE_CURRENT_MA
+#define BALANCING_MAX_CHARGE_CURRENT_MA 2000
+#endif
+
+// Balance selection: enable smooth top-window scaling by dv (default on)
+// When enabled, window_mV = clamp(dv/5, 12, 40) instead of tiered 10/20/30 mV
+#ifndef ENABLE_SMOOTH_TOP_WINDOW
+#define ENABLE_SMOOTH_TOP_WINDOW 1
+#endif
+
+// ########################################################################################################################################
+
+#define INTTERFACE_BOOL_TRUE 0xAA
+#define INTTERFACE_BOOL_FALSE 0xBB
+
+// ########################################################################################################################################
+
+#define OLED_ADDRESS 0x3C
+
+// ########################################################################################################################################
+
+#define NTC_GROUP_PCB 0
+#define NTC_GROUP_CELL 1
+
+// ########################################################################################################################################
+#define BALANCING_THROTTLE_CURRENT_MA 200 // 210 // 2A
+
+#define SERIAL_THREAD_PRIORITY osPriorityNormal
+#define LOGGING_THREAD_PRIORITY osPriorityNormal
+#define MEASUREMENT_THREAD_PRIORITY osPriorityNormal
+#define OPERATION_THREAD_PRIORITY osPriorityNormal
+#define TASKING_THREAD_PRIORITY osPriorityNormal
+#define BQ_THREAD_PRIORITY osPriorityNormal
+
+// ########################################################################################################################################
+
+#define SERIAL_STACK_SIZE 0X400
+#define LOGGING_THREAD_STACK_SIZE 0X800
+#define MEASUREMENT_THREAD_STACK_SIZE 0X1000
+#define OPERATION_THREAD_STACK_SIZE 0X800
+#define TASKING_THREAD_STACK_SIZE 0X400
+#define BQ_THREAD_STACK_SIZE 0X1000
+
+// ########################################################################################################################################
+// Central feature flags
+// Set to 1 to enable publishing Protection/Warning bits in the 0x4251 System Status frame
+#define FEATURE_INVERTER_PROTECT_STATUS 0
+
+// ########################################################################################################################################
+
+#define INTERFACE_COMM_BAUDRATE 250000 // 115200
+#define SERIAL_BAUDRATE 115200
+#define BQ79616_BAUDRATE 1000000
+
+// ########################################################################################################################################
+
+#define WATCHDOG_TIMEOUT_MS 5000 // 5000
+#define WATCHDOG_RESET_TIMEOUT_MS 2000
+
+// ########################################################################################################################################
+
+#define NEGATIVE_SENSITIVE_VALUE 32768
+
+// ########################################################################################################################################
+
+#define ERRORLOG_FILENAME "errorLog.csv"
+#define CELL_VOLTAGE_LOG_FILENAME "cellVoltageLog.csv"
+#define PACK_TEMPERATURE_LOG_FILENAME "packTemperatureLog.csv"
+#define SYSTEM_INFORMATION_LOG_FILENAME "systemInformationLog.csv"
+
+// SD logging: maximum size per file before rotation (bytes).
+// Keep comfortably below FAT32 4GB limit; 256MB default is a good balance.
+#ifndef SD_LOG_MAX_BYTES
+#define SD_LOG_MAX_BYTES (256UL * 1024UL * 1024UL)
+#endif
+
+// Maximum number of rotated segments to keep per log file base name.
+// When the limit is reached, the oldest segment (smallest index) is deleted on next rotation.
+#ifndef SD_LOG_MAX_SEGMENTS
+#define SD_LOG_MAX_SEGMENTS 32
+#endif
+
+// ########################################################################################################################################
+
+#define SYS_BQ_CUR_CALC_COEFF1 1.16508012936684f
+#define SYS_BQ_CUR_CALC_COEFF2 10.3075257702394f
+
+#define SYS_VOLT_CALC_COEFF1 40.354654122759f
+#define SYS_VOLT_CALC_COEFF2 0.7217233567990f
+
+#define SYS_SOC_COEFF1 0.915799f
+#define SYS_SOC_COEFF2 2.874514f
+
+#define PACK_DIV_RA_VALUE 3000.0F
+#define PACK_DIV_RB_VALUE 33.0F
+
+// ########################################################################################################################################
+
+const uint8_t kFaultMask2{0b01000000}; // mask OTP CRC faults because we're not using OTP
+const uint8_t kFaultMask1{0b00000000}; // no mask
+
+// ########################################################################################################################################
+
+template <typename T>
+T clamp(const T &n, const T &lower, const T &upper)
+{
+  return std::max(lower, std::min(n, upper));
+}
+
+// ########################################################################################################################################
+
+#define UTILS_LP_FAST(value, sample, filter_constant) (value -= (filter_constant) * ((value) - (sample)))
+#define UTILS_MAP_FLOAT(value, in_min, in_max, out_min, out_max) ((value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
+
+// ########################################################################################################################################
+typedef enum _enInverterResponseState
+{
+  INVERTER_OK,
+  WAITING_FOR_RESPONSE,
+  INVERTER_FAULT
+} enInverterResponseState;
+// ########################################################################################################################################
+enum enNoOFCells : uint8_t
+{
+  CELL_NUMBER_6S,
+  CELL_NUMBER_7S,
+  CELL_NUMBER_8S,
+  CELL_NUMBER_9S,
+  CELL_NUMBER_10S,
+  CELL_NUMBER_11S,
+  CELL_NUMBER_12S,
+  CELL_NUMBER_13S,
+  CELL_NUMBER_14S,
+  CELL_NUMBER_15S,
+  CELL_NUMBER_16S
+};
+
+// ########################################################################################################################################
+
+enum enCellBalanceProcessState : uint8_t
+{
+  // register bits
+  DONE = 1,
+  RUNNING,
+  PAUSED,
+  OT_PAUSED,
+  ABORTFLT,
+  UKNOWN,
+  INACTIVE,
+  BALANCED,
+  IMBALANCED
+};
+
+// ########################################################################################################################################
+
+enum enCellBalanceTimeIsUp : uint8_t
+{
+  TIME_UP_CELL1 = 1,
+  TIME_UP_CELL2,
+  TIME_UP_CELL3,
+  TIME_UP_CELL4,
+  TIME_UP_CELL5,
+  TIME_UP_CELL6,
+  TIME_UP_CELL7,
+  TIME_UP_CELL8,
+  TIME_UP_CELL9,
+  TIME_UP_CELL10,
+  TIME_UP_CELL11,
+  TIME_UP_CELL12,
+  TIME_UP_CELL13,
+  TIME_UP_CELL14,
+  TIME_UP_CELL15,
+  TIME_UP_CELL16
+};
+
+// ########################################################################################################################################
+
+enum enBqErrorType : uint8_t
+{
+  // register bits
+  NO_ERROR,
+  PWR_FAULT,
+  SYS_FAULT,
+  OVUV_FAULT,
+  OTUT_FAULT,
+  COMM_FAULT,
+  OTP_FAULT,
+  COMP_ADC_FAULT,
+  PROT_FAULT
+};
+
+// ########################################################################################################################################
+
+enum enPowerElecPackOperationCellState : uint8_t
+{
+  PACK_STATE_ERROR_HARD_CELLVOLTAGE,
+  PACK_STATE_ERROR_SOFT_CELLVOLTAGE,
+  PACK_STATE_ERROR_OVER_CURRENT,
+  PACK_STATE_ERROR_SHORT_CURRENT,
+  PACK_STATE_ERROR_OVER_TEMPERATURE,
+  PACK_STATE_NORMAL,
+  PACK_STATE_ERROR_CHARGE_OVER_CURRENT,
+  PACK_STATE_ERROR_UNDER_TEMPERATURE,
+  PACK_STATE_CRITICAL_TEMPERATURE,
+};
+
+// ########################################################################################################################################
+
+enum enBmsState : uint8_t
+{
+  BMS_IDLE = 1,
+  BMS_DISCHARGE,
+  BMS_CHARGE
+};
+
+// ########################################################################################################################################
+
+enum enBatteryErrors : uint8_t
+{
+  SYS_OK,
+  SYS_ERROR_CELL_OVER_VOLTAGE,
+  SYS_ERROR_CELL_UNDER_VOLTAGE,
+  SYS_ERROR_CHG_OVER_CURRENT,
+  SYS_ERROR_DCHG_OVER_CURRENT,
+  SYS_ERROR_CELL_OVER_TEMPERATURE_CHARGE,
+  SYS_ERROR_CELL_OVER_TEMPERATURE_DISCHARGE,
+  SYS_ERROR_CELL_UNDER_TEMPERATURE_CHARGE,
+  SYS_ERROR_CELL_UNDER_TEMPERATURE_DISCHARGE,
+  SYS_ERROR_CELL_UNDER_TEMPERATURE_IDLE,
+  SYS_ERROR_CELL_OVER_TEMPERATURE_IDLE,
+
+  SYS_ERROR_CHIPSET,
+  SYS_ERROR_SHORT_CIRCUIT,
+
+  SYS_ERROR_CHIPSET_COMM, // New error for communication loss
+
+  SYS_WARNING_NO_CHARGE,
+  SYS_WARNING_NO_DISCHARGE,
+  SYS_WARNING_EEPROM_EMPTY
+};
+
+// ########################################################################################################################################
+
+// Enum class for over-voltage values
+enum enOverVoltageThreshold : uint8_t
+{
+  // Range from 2700 mV to 3000 mV (0x02 to 0x0E)
+  OV_THR_2700mV = 0x02, // 2700 mV
+  OV_THR_2725mV = 0x03, // 2725 mV
+  OV_THR_2750mV = 0x04, // 2750 mV
+  OV_THR_2775mV = 0x05, // 2775 mV
+  OV_THR_2800mV = 0x06, // 2800 mV
+  OV_THR_2825mV = 0x07, // 2825 mV
+  OV_THR_2850mV = 0x08, // 2850 mV
+  OV_THR_2875mV = 0x09, // 2875 mV
+  OV_THR_2900mV = 0x0A, // 2900 mV
+  OV_THR_2925mV = 0x0B, // 2925 mV
+  OV_THR_2950mV = 0x0C, // 2950 mV
+  OV_THR_2975mV = 0x0D, // 2975 mV
+  OV_THR_3000mV = 0x0E, // 3000 mV
+
+  // Range from 3500 mV to 3800 mV (0x12 to 0x1E)
+  OV_THR_3500mV = 0x12, // 3500 mV
+  OV_THR_3525mV = 0x13, // 3525 mV
+  OV_THR_3550mV = 0x14, // 3550 mV
+  OV_THR_3575mV = 0x15, // 3575 mV
+  OV_THR_3600mV = 0x16, // 3600 mV
+  OV_THR_3625mV = 0x17, // 3625 mV
+  OV_THR_3650mV = 0x18, // 3650 mV
+  OV_THR_3675mV = 0x19, // 3675 mV
+  OV_THR_3700mV = 0x1A, // 3700 mV
+  OV_THR_3725mV = 0x1B, // 3725 mV
+  OV_THR_3750mV = 0x1C, // 3750 mV
+  OV_THR_3775mV = 0x1D, // 3775 mV
+  OV_THR_3800mV = 0x1E, // 3800 mV
+
+  // Range from 4175 mV to 4475 mV (0x22 to 0x2E)
+  OV_THR_4175mV = 0x22, // 4175 mV
+  OV_THR_4200mV = 0x23, // 4200 mV
+  OV_THR_4225mV = 0x24, // 4225 mV
+  OV_THR_4250mV = 0x25, // 4250 mV
+  OV_THR_4275mV = 0x26, // 4275 mV
+  OV_THR_4300mV = 0x27, // 4300 mV
+  OV_THR_4325mV = 0x28, // 4325 mV
+  OV_THR_4350mV = 0x29, // 4350 mV
+  OV_THR_4375mV = 0x2A, // 4375 mV
+  OV_THR_4400mV = 0x2B, // 4400 mV
+  OV_THR_4425mV = 0x2C, // 4425 mV
+  OV_THR_4450mV = 0x2D, // 4450 mV
+  OV_THR_4475mV = 0x2E  // 4475 mV
+};
+
+// ########################################################################################################################################
+
+// Enum class for under-voltage values
+enum enUnderVoltageThreshold : uint8_t
+{
+  // Range from 1200 mV to 3100 mV (0x00 to 0x26)
+  UV_THR_1200mV = 0x00, // 1200 mV
+  UV_THR_1250mV = 0x01, // 1250 mV
+  UV_THR_1300mV = 0x02, // 1300 mV
+  UV_THR_1350mV = 0x03, // 1350 mV
+  UV_THR_1400mV = 0x04, // 1400 mV
+  UV_THR_1450mV = 0x05, // 1450 mV
+  UV_THR_1500mV = 0x06, // 1500 mV
+  UV_THR_1550mV = 0x07, // 1550 mV
+  UV_THR_1600mV = 0x08, // 1600 mV
+  UV_THR_1650mV = 0x09, // 1650 mV
+  UV_THR_1700mV = 0x0A, // 1700 mV
+  UV_THR_1750mV = 0x0B, // 1750 mV
+  UV_THR_1800mV = 0x0C, // 1800 mV
+  UV_THR_1850mV = 0x0D, // 1850 mV
+  UV_THR_1900mV = 0x0E, // 1900 mV
+  UV_THR_1950mV = 0x0F, // 1950 mV
+  UV_THR_2000mV = 0x10, // 2000 mV
+  UV_THR_2050mV = 0x11, // 2050 mV
+  UV_THR_2100mV = 0x12, // 2100 mV
+  UV_THR_2150mV = 0x13, // 2150 mV
+  UV_THR_2200mV = 0x14, // 2200 mV
+  UV_THR_2250mV = 0x15, // 2250 mV
+  UV_THR_2300mV = 0x16, // 2300 mV
+  UV_THR_2350mV = 0x17, // 2350 mV
+  UV_THR_2400mV = 0x18, // 2400 mV
+  UV_THR_2450mV = 0x19, // 2450 mV
+  UV_THR_2500mV = 0x1A, // 2500 mV
+  UV_THR_2550mV = 0x1B, // 2550 mV
+  UV_THR_2600mV = 0x1C, // 2600 mV
+  UV_THR_2650mV = 0x1D, // 2650 mV
+  UV_THR_2700mV = 0x1E, // 2700 mV
+  UV_THR_2750mV = 0x1F, // 2750 mV
+  UV_THR_2800mV = 0x20, // 2800 mV
+  UV_THR_2850mV = 0x21, // 2850 mV
+  UV_THR_2900mV = 0x22, // 2900 mV
+  UV_THR_2950mV = 0x23, // 2950 mV
+  UV_THR_3000mV = 0x24, // 3000 mV
+  UV_THR_3050mV = 0x25, // 3050 mV
+  UV_THR_3100mV = 0x26  // 3100 mV
+};
+
+// ########################################################################################################################################
+
+// Enum class for OT threshold values
+// 10%-39% in steps of 1% sourced from TSREF regulator voltage.
+// Default Reset setting 39%.
+enum enOverTemperatureThreshold : uint8_t
+{
+  PERCENT_10 = 0x1D,
+  PERCENT_11 = 0x1C,
+  PERCENT_12 = 0x1B,
+  PERCENT_13 = 0x1A,
+  PERCENT_14 = 0x19,
+  PERCENT_15 = 0x18,
+  PERCENT_16 = 0x17,
+  PERCENT_17 = 0x16,
+  PERCENT_18 = 0x15,
+  PERCENT_19 = 0x14,
+  PERCENT_20 = 0x13,
+  PERCENT_21 = 0x12,
+  PERCENT_22 = 0x11,
+  PERCENT_23 = 0x10,
+  PERCENT_24 = 0x0F,
+  PERCENT_25 = 0x0E,
+  PERCENT_26 = 0x0D,
+  PERCENT_27 = 0x0C,
+  PERCENT_28 = 0x0B,
+  PERCENT_29 = 0x0A,
+  PERCENT_30 = 0x09,
+  PERCENT_31 = 0x08,
+  PERCENT_32 = 0x07,
+  PERCENT_33 = 0x06,
+  PERCENT_34 = 0x05,
+  PERCENT_35 = 0x04,
+  PERCENT_36 = 0x03,
+  PERCENT_37 = 0x02,
+  PERCENT_38 = 0x01,
+  PERCENT_39 = 0x00
+};
+
+// ########################################################################################################################################
+
+// Enum class for UT threshold values
+// 66%-80% in steps of 2% sourced from TSREF regulator voltage.
+// Default Reset setting 80%.
+enum enUnderTemperatureThreshold : uint8_t
+{
+  PERCENT_66 = 0x00,
+  PERCENT_68 = 0x20,
+  PERCENT_70 = 0x40,
+  PERCENT_72 = 0x80,
+  PERCENT_74 = 0xA0,
+  PERCENT_76 = 0x50,
+  PERCENT_78 = 0x60,
+  PERCENT_80 = 0xE0
+};
+
+// ########################################################################################################################################
+
+// Enum class for over-voltage/under-voltage protector modes
+enum enProtectionMode : uint8_t
+{
+  PROTECTION_MODE_DISABLED = 0x00,
+  ROUND_ROBIN = 0x01,
+  BIST_CYCLE = 0x02,
+  LOCK_TO_SINGLE_CH = 0x03
+};
+
+// ########################################################################################################################################
+
+// Enum class for main ADC modes
+enum enMainAdcMode : uint8_t
+{
+  ADC_MODE_DISABLED = 0x00,
+  SINGLE_RUN = 0x01,
+  CONTINUOUS_RUN = 0x02
+};
+
+// ########################################################################################################################################
+
+// Enum class for duty cycle values
+enum enBalanceDutyCycle : uint8_t
+{
+  SEC_5 = 0x0,
+  SEC_10 = 0x1,
+  SEC_30 = 0x2,
+  MIN_1 = 0x3,
+  MIN_5 = 0x4,
+  MIN_10 = 0x5,
+  MIN_20 = 0x6,
+  MIN_30 = 0x7
+};
+
+// ########################################################################################################################################
+
+enum enOledDisplayInfo : uint8_t
+{
+  DISPLAY_MODE_OFF = 0,
+  DISPLAY_MODE_INIT,
+  DISPLAY_MODE_INFO,
+};
+
+// ########################################################################################################################################
+
+enum enSwitchesID : uint8_t
+{
+  SWITCH_CHARGE = 0,
+  SWITCH_PRECHARGE,
+  SWITCH_DISCHARGE
+};
+
+// ########################################################################################################################################
+
+enum enSwitchesState : uint8_t
+{
+  SWITCH_RESET = 0,
+  SWITCH_SET
+};
+
+// ########################################################################################################################################
+
+enum enOledDisplayInfoType : uint8_t
+{
+  DISP_MODE_OFF = 0,
+  DISP_MODE_SPLASH,
+  DISP_MODE_LOAD,
+  DISP_MODE_CHARGE,
+  DISP_MODE_POWEROFF,
+  DISP_MODE_ERROR,
+  DISP_MODE_ERROR_PRECHARGE,
+  DISP_MODE_BATTERY_DEAD,
+  DISP_MODE_BALANCING,
+  DISP_MODE_CHARGED,
+  DISP_MODE_FORCED_ON
+};
+
+// ########################################################################################################################################
+
+enum enEepromValuesIndex : uint16_t
+{
+
+  CMD_EE_ADDR_NumberOfCells = SETTINGS_START_ADDRESS,
+  CMD_EE_ADDR_HysteresisDischarge = 2,
+  CMD_EE_ADDR_HysteresisCharge = 4,
+  CMD_EE_ADDR_HysteresisCurrent = 6,
+  CMD_EE_ADDR_HysteresisOverTemperature = 8,
+  CMD_EE_ADDR_TimeoutDischargeRetry = 10,
+  CMD_EE_ADDR_TimeoutChargeRetry = 12,
+  CMD_EE_ADDR_TimeoutOverTemperatureRetry = 14,
+  CMD_EE_ADDR_TimeoutLowCurrentPreChargeRetry = 16,
+  CMD_EE_ADDR_TimeoutSoftOverCurrentRetry = 18,
+  CMD_EE_ADDR_TimeoutHardOverCurrentRetry = 20,
+  CMD_EE_ADDR_DisplayTimeoutBatteryDead = 22,
+  CMD_EE_ADDR_DisplayTimeoutBatteryErrorPreCharge = 24,
+  CMD_EE_ADDR_DisplayTimeoutBatteryError = 26,
+  CMD_EE_ADDR_TimeoutChargerDisconnected = 28,
+  CMD_EE_ADDR_TimeoutChargeCompleted = 30,
+  CMD_EE_ADDR_TimeoutNotUsed = 32,
+  CMD_EE_ADDR_ShuntResistance = 34,
+  CMD_EE_ADDR_MaxUnderAndOverVoltageErrorCount = 36,
+  CMD_EE_ADDR_MaxHardOverCurrentErrorCount = 38,
+  CMD_EE_ADDR_MaxSoftOverCurrentErrorCount = 40,
+  CMD_EE_ADDR_ChargerEnabledThreshold = 42,
+  CMD_EE_ADDR_MinimalPrechargePercentage = 44,
+  CMD_EE_ADDR_NotUsedCurrentThreshold = 46,
+  CMD_EE_ADDR_MaxMismatchThreshold = 48,
+  CMD_EE_ADDR_TimeoutChargingCompletedMinimalMismatch = 50,
+  CMD_EE_ADDR_MaxSoftDchgAllowedCurrent = 52,
+  CMD_EE_ADDR_MaxHardDchgAllowedCurrent = 54,
+  CMD_EE_ADDR_SoftLowCurrentUnderVoltage = 56,
+  CMD_EE_ADDR_SoftHighCurrentUnderVoltage = 58,
+  CMD_EE_ADDR_HardUnderVoltage = 60,
+  CMD_EE_ADDR_SoftOverVoltage = 62,
+  CMD_EE_ADDR_HardOverVoltage = 64,
+  CMD_EE_ADDR_PcbNtcTopResistor = 66,
+  CMD_EE_ADDR_PcbNtc25DegResistance = 68,
+  CMD_EE_ADDR_PcbNtcBetaFactor = 70,
+  CMD_EE_ADDR_CellNtcTopResistor = 72,
+  CMD_EE_ADDR_CellNtc25DegResistance = 74,
+  CMD_EE_ADDR_CellNtcBetaFactor = 76,
+  CMD_EE_ADDR_AllowedTempPCBMax = 78,
+  CMD_EE_ADDR_AllowedTempPCBMin = 80,
+  CMD_EE_ADDR_AllowedTempBattDischargingMax = 82,
+  CMD_EE_ADDR_AllowedTempBattDischargingMin = 84,
+  CMD_EE_ADDR_AllowedTempBattChargingMax = 86,
+  CMD_EE_ADDR_AllowedTempBattChargingMin = 88,
+  CMD_EE_ADDR_BatteryCapacity = 90,
+  CMD_EE_ADDR_MaxSoftChgAllowedCurrent = 92,
+  CMD_EE_ADDR_MaxHardChgAllowedCurrent = 94,
+  CMD_EE_ADDR_BalanceStartVoltage = 96,
+  CMD_EE_ADDR_HardOverTemperatureErrorCount = 98,
+  CMD_EE_ADDR_NoOfCellsPerModule = 100,
+  CMD_EE_ADDR_InternalResistance = 102,
+  CMD_EE_ADDR_NumberOfTemperature = 104,
+  CMD_EE_ADDR_CurrentOffsetValue = 106,
+  CMD_EE_ADDR_BalanceDifferenceThreshold = 108,
+  CMD_EE_ADDR_CellVoltagesOffsetVoltage = 110,
+  CMD_EE_ADDR_OverMismatchVoltage = 112,
+
+  // Highlight: Added new EEPROM addresses to store the last remaining capacity in mAh.
+  CMD_EE_ADDR_LastRemainingCapacity_L = 114,
+  CMD_EE_ADDR_LastRemainingCapacity_H = 116,
+  CMD_EE_ADDR_CommissioningDone = 118,
+
+  CMD_EE_ADDR_MappedEepromVal = SETTINGS_STOP_ADDRESS,
+  CMD_EE_ADDR_ErrorIndexCount = EEPROM_ERROR_INDEX_ADDRESS
+};
+
+// ########################################################################################################################################
+
+// Communication commands
+typedef enum _enCommPacketId
+{
+  INTERFACE_COMM_CMD_PRINT_TO_LOG = 0xB0,
+  INTERFACE_COMM_CMD_LIVE_RACK_PARAMS = 0xD0,
+  INTERFACE_COMM_CMD_LIVE_MODULE_GENERAL = 0xD1,
+  INTERFACE_COMM_CMD_LIVE_MODULE_CELL_VOLTAGES = 0xD2,
+  INTERFACE_COMM_CMD_LIVE_MODULE_TEMPERATURES = 0xD3,
+
+  COMM_FW_LIVE_CELL_VOLTAGES = 0xC1,
+  COMM_FW_LIVE_CELL_TEMPS = 0xD0,
+  COMM_FW_DIAGNOSTIC_LOAD = 0xD1,
+  COMM_FW_DIAGNOSTIC_LOAD_ERROR = 0xD2,
+  COMM_FW_DIAGNOSTIC_ERROR_GETTING = 0xD3,
+  COMM_FW_SETTINGS_RESET_PARAMS_GROUP1 = 0xD4,
+  COMM_FW_SETTINGS_RESET_PARAMS_GROUP2 = 0xD5,
+  COMM_FW_SDCARD_LOG_CELL_VOLTAGES_ERROR = 0xD6,
+  COMM_FW_POWEROFF_SYSTEM = 0xD7
+} enInterfaceCommCmdId;
+
+// ########################################################################################################################################
+
+typedef enum _enBuzzerSignalSource
+{
+  BUZZER_SOURCE_OFF,
+  BUZZER_SOURCE_ON,
+  BUZZER_SOURCE_CELL_UNDERVOLTAGE,
+  BUZZER_SOURCE_CELL_OVERVOLTAGE,
+  BUZZER_SOURCE_CELL_DIFF_OVERVOLTAGE,
+  BUZZER_SOURCE_MODULE_OVERVOLTAGE,
+  BUZZER_SOURCE_OVERCCURRENT,
+} enBuzzerSignalSource;
+
+// ########################################################################################################################################
+
+typedef enum _enBuzzerSignalType
+{
+  BUZZER_SIGNAL_TYPE_OFF = 0,
+  BUZZER_SIGNAL_TYPE_ON,
+  BUZZER_SIGNAL_TYPE_TOGGLE,
+  BUZZER_SIGNAL_TYPE_TOGGLE_FAST,
+  BUZZER_SIGNAL_TYPE_PULSE_SHORT,
+  BUZZER_SIGNAL_TYPE_PULSE_LONG,
+  BUZZER_SIGNAL_TYPE_PULSE200_20,
+  BUZZER_SIGNAL_TYPE_PULSE1000_4
+} enBuzzerSignalType;
+
+// ########################################################################################################################################
+
+typedef enum _enProtectionState
+{
+  PROT_STATE_OK,
+  PROT_STATE_DETECT_TIMEOUT_START,
+  PROT_STATE_COUNT_TIMEOUT,
+  PROT_STATE_DETECT,
+  PROT_STATE_RELEASE_TIMEOUT_START,
+  PROT_STATE_RELEASE,
+} enProtectionState;
+
+// ########################################################################################################################################
+typedef enum _enModuleErrors
+{
+  MODULE_UNDER_CELL_VOLTAGE,
+  MODULE_OVER_CELL_VOLTAGE,
+  MODULE_OVER_DIFF_CELL_VOLTAGE,
+  MODULE_OVER_VOLTAGE,
+  MODULE_OVER_CURRENT_DISCHARGE,
+  MODULE_OVER_CURRENT_CHARGE,
+  MODULE_UNDER_TEMPERATURE,
+  MODULE_OVER_TEMPERATURE,
+  MODULE_OVER_DIFF_TEMPERATURE,
+  MODULE_SHORT_CIRCUIT,
+} enModuleErrors;
+
+// ########################################################################################################################################
+
+typedef enum _enInterfaceButtonState
+{
+  INTERFACE_BUTTON_PAGE_LIVE_RACK = 0x01,
+  INTERFACE_BUTTON_PAGE_LIVE_MODULE,
+  INTERFACE_BUTTON_PAGE_SETTINGS,
+  INTERFACE_BUTTON_PAGE_DIAGNOSTIC
+} enInterfaceButtonState;
+
+// ########################################################################################################################################
+
+typedef enum _enRackBalancingState
+{
+  RACK_BALANCING_DONE = 1,
+  RACK_BALANCING_RUNNING,
+  RACK_BALANCING_PAUSED,
+  RACK_BALANCING_OT_PAUSED,
+  RACK_BALANCING_ABORTFLT,
+  RACK_BALANCING_UKNOWN,
+  RACK_BALANCING_INACTIVE,
+  RACK_BALANCING_BALANCED,
+  RACK_BALANCING_IMBALANCED
+} enRackBalancingState;
+
+// ########################################################################################################################################
+
+typedef enum _enInterfaceMessageType
+{
+  INTERFACE_MSG_TYPE_BUTTON_TYPE = 0xD0,
+  INTERFACE_MSG_TYPE_MODULE_NUMBER = 0xD1,
+  INTERFACE_MSG_TYPE_DEV_DEBUGGING = 0xD2,
+
+  INTERFACE_MSG_TYPE_UPDATE_SETTINGS_GROUP1 = 0xC1,
+  INTERFACE_MSG_TYPE_UPDATE_SETTINGS_GROUP2 = 0xC2,
+  INTERFACE_MSG_TYPE_CELL_VOLTAGE_LOGGING_NOTIFY = 0xC3,
+
+  INTERFACE_MSG_TYPE_DATETIME_LOADING_NOTIFY = 0xC6,
+  INTERFACE_MSG_TYPE_PACK_TEMPERATURE_LOGGING_NOTIFY = 0xC7,
+  INTERFACE_MSG_TYPE_SHUTDOWN_REQUEST = 0xC8,
+  INTERFACE_MSG_TYPE_SYSTEM_INFOMATION = 0xC9,
+
+  INTERFACE_MSG_TYPE_PRINT = 0xB0
+} enInterfaceMessageType;
+
+// ########################################################################################################################################
+
+#pragma pack(push)
+#pragma pack(1)
+
+typedef union
+{
+  uint32_t val;
+  struct
+  {
+    uint8_t byte0 : 8;
+    uint8_t byte1 : 8;
+    uint8_t byte2 : 8;
+    uint8_t byte3 : 8;
+  };
+} dLong;
+
+// ########################################################################################################################################
+
+typedef union
+{
+  uint16_t val;
+  struct
+  {
+    uint8_t byte0 : 8;
+    uint8_t byte1 : 8;
+  };
+  struct
+  {
+    uint8_t bit0 : 1;
+    uint8_t bit1 : 1;
+    uint8_t bit2 : 1;
+    uint8_t bit3 : 1;
+    uint8_t bit4 : 1;
+    uint8_t bit5 : 1;
+    uint8_t bit6 : 1;
+    uint8_t bit7 : 1;
+    uint8_t bit8 : 1;
+    uint8_t bit9 : 1;
+    uint8_t bit10 : 1;
+    uint8_t bit11 : 1;
+    uint8_t bit12 : 1;
+    uint8_t bit13 : 1;
+    uint8_t bit14 : 1;
+    uint8_t bit15 : 1;
+  };
+} dShort;
+
+// ########################################################################################################################################
+
+typedef union
+{
+  int16_t val;
+  struct
+  {
+    int8_t byte0 : 8;
+    int8_t byte1 : 8;
+  };
+  struct
+  {
+    int8_t bit0 : 1;
+    int8_t bit1 : 1;
+    int8_t bit2 : 1;
+    int8_t bit3 : 1;
+    int8_t bit4 : 1;
+    int8_t bit5 : 1;
+    int8_t bit6 : 1;
+    int8_t bit7 : 1;
+    int8_t bit8 : 1;
+    int8_t bit9 : 1;
+    int8_t bit10 : 1;
+    int8_t bit11 : 1;
+    int8_t bit12 : 1;
+    int8_t bit13 : 1;
+    int8_t bit14 : 1;
+    int8_t bit15 : 1;
+  };
+} dIntShort;
+
+// ########################################################################################################################################
+
+typedef struct _bqConfigStructTypedef
+{
+
+  enNoOFCells numberOfCells;
+
+  enOverVoltageThreshold OVThreshold;
+  enUnderVoltageThreshold UVThreshold;
+  enUnderTemperatureThreshold UTThreshold;
+  enOverTemperatureThreshold OTThreshold;
+  enMainAdcMode mainAdcMode;
+  enProtectionMode protectionOVUVMode;
+  enProtectionMode protectionOTUTMode;
+  enBalanceDutyCycle balanceDutyCycle;
+} st_bqConfigStructTypedef;
+
+// ########################################################################################################################################
+
+#pragma pack(pop)
+
+// ########################################################################################################################################
+
+typedef struct _datetimeInfo
+{
+  uint8_t u8SysSecond;
+  uint8_t u8SysMinute;
+  uint8_t u8SysHour;
+  uint8_t u8SysDay;
+  uint8_t u8SysMonth;
+  uint8_t u8SysYear;
+
+} st_datetimeInfo;
+
+// ########################################################################################################################################
+
+typedef struct _stOledDisplayData
+{
+  uint8_t errorType;
+  uint8_t bmsState;
+
+  uint16_t u16PackVoltage;
+  uint16_t u16LowestCellVoltage;
+  uint16_t u16HighestCellVoltage;
+  uint16_t u16AvgCellVoltage;
+
+  int32_t i32PackCurrent;
+  int32_t i32PackTemperature;
+
+  st_datetimeInfo datetimeInfo;
+
+} st_OledDisplayData;
+
+// ########################################################################################################################################
+
+typedef struct _errorEepromData
+{
+  uint8_t errorType;
+  uint8_t operationState;
+  st_datetimeInfo datetimeInfo;
+
+} st_errorEepromData;
+
+// ########################################################################################################################################
+
+typedef struct _errorSdCardData
+{
+  uint8_t errorType;
+  uint8_t operationState;
+
+  uint16_t u16SysVoltage;
+  uint16_t u16CellVoltageMax;
+  uint16_t u16CellVoltageMin;
+  uint16_t u16CellVoltageAverage;
+
+  int32_t i32PcbTemperature;
+  int32_t i32TemperatureMax;
+  int32_t i32TemperatureMin;
+  int32_t i32CellTemperatureAverage;
+  int32_t i32SysCurrent;
+
+  st_datetimeInfo datetimeInfo;
+
+} st_errorSdCardData;
+
+// ########################################################################################################################################
+
+typedef struct _stateOfCharge
+{
+  int32_t generalStateOfCharge;
+  int32_t generalStateOfHealth;
+  int32_t remainingCapacityAh;
+  int32_t remainingCapacityWh;
+} st_stateOfChargeConfig;
+
+// ########################################################################################################################################
+
+typedef struct _cellMonitorCells
+{
+  uint16_t u16CellVoltage;
+  uint8_t u8CellNumber;
+  bool bCellBleedActive;
+} st_cellMonitorCells;
+
+// ########################################################################################################################################
+
+typedef struct _moduleMonitorParams
+{
+  uint8_t u8operationState;
+  // uint8_t u8arrPackSerialId;
+  enCellBalanceProcessState u8arrPackBalanceState;
+  uint16_t u16PackVoltage;
+  uint16_t u16Soc;
+  uint16_t u16CellVoltageHigh;
+  uint16_t u16CellVoltageLow;
+  uint16_t u16CellVoltageAverage;
+  uint16_t u16CellVoltageMisMatch;
+
+  int32_t i32TemperatureMax;
+  int32_t i32TemperatureMin;
+  int32_t i32TemperatureAverage;
+  int32_t i32TemperatureMismatch;
+
+} st_moduleMonitorParams;
+
+// ########################################################################################################################################
+
+typedef struct _protectionParameters
+{
+  enProtectionState protectionState;
+  enProtectionState lastProtectionState;
+  uint8_t u8ProtectionDetectionCounter;
+  bool bOperationProtectionActive;
+  bool bLoggingProtectionActive;
+  bool bMeasurementProtectionActive;
+  bool bControllerProtectionActive;
+} st_protectionParameters;
+
+// ########################################################################################################################################
+
+typedef struct _generalConfig
+{
+
+  bool bUsePrechargeFlag;
+  bool bDisableChargeDuringBalance;
+
+  uint8_t u8NumberOfCells;
+  uint8_t u8NumberOfTemperature;
+  uint8_t u8NoOfCellsPerModule;
+  uint8_t u8NumberOfModules;
+  int16_t i16CellVoltagesOffsetVoltage;
+  uint16_t u16BatteryCapacity;
+  uint16_t u16HardUnderVoltage;
+  uint16_t u16HardOverVoltage;
+  uint16_t u16SoftLowCurrentUnderVoltage;
+  uint16_t u16SoftHighCurrentUnderVoltage;
+  uint16_t u16SoftOverVoltage;
+  uint16_t u16MaxDischargePackVoltage;
+  uint16_t u16MaxChargePackVoltage;
+  uint16_t u16ShuntResistance;
+  uint16_t u16BalanceStartVoltage;
+  uint16_t u16HysteresisDischarge;
+  uint16_t u16HysteresisCharge;
+  uint16_t u16HysteresisCurrent;
+  uint16_t u16HysteresisOverTemperature;
+  uint16_t u16HysteresisOverMismatchVoltage;
+  uint16_t u16TimeoutDischargeRetry;
+  uint16_t u16TimeoutChargeRetry;
+  uint16_t u16TimeoutLowCurrentPreChargeRetry;
+  uint16_t u16TimeoutSoftOverCurrentRetry;
+  uint16_t u16TimeoutHardOverCurrentRetry;
+  uint16_t u16TimeoutOverTemperatureRetry;
+  uint16_t u16TimeoutNotUsed;
+  uint16_t u16TimeoutChargeCompleted;
+  uint16_t u16BalanceDifferenceThreshold;
+  uint16_t u16ChargerEnabledThreshold;
+  uint16_t u16MinimalPrechargePercentage;
+  uint16_t u16InternalResistance;
+  uint16_t u16MaxSoftDchgAllowedCurrent;
+  uint16_t u16MaxHardDchgAllowedCurrent;
+  uint16_t u16MaxSoftChgAllowedCurrent;
+  uint16_t u16MaxHardChgAllowedCurrent;
+  uint16_t u16NotUsedCurrentThreshold;
+  uint16_t u16DisplayTimeoutBatteryDead;
+  uint16_t u16DisplayTimeoutBatteryErrorPreCharge;
+  uint16_t u16DisplayTimeoutBatteryError;
+  uint16_t u16TimeoutChargerDisconnected;
+  uint16_t u16MaxMismatchThreshold;
+  uint16_t u16OverMismatchVoltage;
+  uint16_t u16TimeoutChargingCompletedMinimalMismatch;
+  uint16_t u16AllowedTempBattDischargingMax;
+  uint16_t u16AllowedTempBattDischargingMin;
+  uint16_t u16AllowedTempBattChargingMax;
+  uint16_t u16AllowedTempBattChargingMin;
+  uint16_t u32ArrNtcBetaFactor;
+  uint16_t u16CurrentOffsetValue;
+  uint32_t u32ArrNtcTopResistor;
+  uint32_t u32ArrNtc25DegResistance;
+
+} st_generalConfig;
+
+// ########################################################################################################################################
+typedef enum _enOvervoltageState
+{
+  OV_STATE_NORMAL,
+  OV_STATE_TRIPPED,
+  OV_STATE_RECOVERY
+} enOvervoltageState;
+
+// ########################################################################################################################################
+typedef struct _powerElecPackInfoConfig
+{
+
+  uint32_t u32LastBqDataTimestamp; // timestamp of last BQ data (ms)
+
+  // Highlight: Added a flag to signal the Measurement thread to save the SOC.
+  bool bSaveSocToEepromRequest;
+  bool bForceBalanceActive; // This is the new flag
+
+  bool bUpdatedSettingFlags;
+  bool bTempEnableBatteryCharge;
+  bool bTempEnableBatteryDisCharge;
+  bool bPredischargeDesiredFlag;
+  bool bDischargeDesiredFlag;
+  bool bChargeDesiredFlag;
+  bool bDischargeLowCurrentAllowed;
+  bool bDischargeHighCurrentAllowed;
+  bool bChargeAllowed;
+  bool bChargeBalanceActive;
+  bool bPowerButtonActuated;
+  bool bChargeCurrentDetected;
+  bool bPackInSOADischarge;
+  bool bPackInSOACharge;
+  bool bAllowedErrorFlags;
+  bool bPushedShutdownChipSet;
+  bool bBuzzerEnabledState;
+
+  enPowerElecPackOperationCellState packOperationCellState;
+  enBatteryErrors packBatteryWarErrState;
+  enBatteryErrors packLastErrorState;
+  enBmsState bmsState;
+  enBqErrorType chipsetErrorState;
+  enRackBalancingState rackBalancingState;
+
+  enOvervoltageState overvoltageState;
+
+  enInverterResponseState inverterResponseState;
+  uint32_t u32InverterCommandTimestamp;
+
+  uint8_t u8ErrorCount;
+  uint8_t u8InterfaceActiveButtonState;
+  uint8_t u8CellVoltageLoggingState;
+  uint8_t u8PackTemperatureLoggingState;
+  uint8_t u8SystemInformationLoggingState;
+  uint8_t u8DebuggingState;
+  uint8_t u8allowedShutDown;
+  uint8_t u8ActiveModuleNumber;
+  uint8_t u8operationState;
+
+  enBuzzerSignalSource buzzerSignalSource;
+  enBuzzerSignalType buzzerSignalType;
+  uint8_t u8BuzzerSignalPersistant;
+
+  uint8_t u8SoftChargeOvercurrentReleasingCount;
+  uint8_t u8SoftDischargeOvercurrentReleasingCount;
+
+  uint16_t u16SupplyVoltage;
+  uint16_t u16ModuleBusbarVal;
+  uint16_t u16ModuleCellVoltageMax;
+  uint16_t u16ModuleCellVoltageMin;
+  uint16_t u16ModuleCellVoltageAverage;
+  uint16_t u16ModuleCellVoltageMisMatch;
+  bool bBalancingActive;
+  uint16_t u16ModuleSoc;
+  uint8_t u8SocConfidence;     // SOC confidence level (0-100%), based on OCV curve position
+  uint16_t u16CurrentOffsetValue;
+  int32_t i32ModuleCurrent;
+  int32_t i32SysFastCurrent;
+  int32_t i32ModulePower;
+  int32_t i32ModuleTemperatureMax;
+  int32_t i32ModuleTemperatureMin;
+  int32_t i32ModuleTemperatureMismatch;
+  int32_t i32ModuleTemperatureAverage;
+  uint32_t u32ModuleLoadVoltage;
+  uint32_t u32SocCapacity;
+  uint32_t u32ModuleVoltage;
+  st_protectionParameters moduleProtectionParams[NoOfPROTS_POSSIBLE_ON_SYS];
+  st_datetimeInfo datetimeInfo;
+
+  // Slave modules
+  st_cellMonitorCells cellVoltagesIndividual[NoOfCELL_POSSIBLE_ON_CHIP * NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  st_moduleMonitorParams moduleMonitorParams[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+
+  uint16_t cellModuleVoltages[NoOfCELL_MONITORS_POSSIBLE_ON_BMS][NoOfCELL_POSSIBLE_ON_CHIP];
+  uint16_t cellModuleBalanceResistorEnableMask[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  int32_t i32arrCellModuleBMSEXTTemperature[NoOfCELL_MONITORS_POSSIBLE_ON_BMS][NoOfTEMP_POSSIBLE_ON_CHIP];
+
+} st_powerElecPackInfoConfig;
+
+// ########################################################################################################################################
+typedef struct
+{
+  int32_t i32ModuleCurrent; // filtered pack current (mA)
+
+  uint16_t u16ModuleBusbarVal;
+  uint16_t cellVoltagesIndividual[NoOfCELL_POSSIBLE_ON_CHIP * NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  int32_t tempValuesIndividual[NoOfTEMP_POSSIBLE_ON_CHIP * NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  enCellBalanceProcessState balanceStateIndividual[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+  // uint8_t u8arrPartId[NoOfCELL_MONITORS_POSSIBLE_ON_BMS];
+
+} st_mailPowerElecPackInfoConfig;
+
+// ########################################################################################################################################
+
+typedef struct _protections_params
+{
+  bool bProtectionsMeasurementDetectionFlag;
+  bool bProtectionsTimeoutFlag;
+  bool bProtectionsReleaseFlag;
+  uint8_t u8ProtectionsCount;
+  const uint8_t ku8ConsecutiveReadingsThreshold;
+  uint32_t u32ProtectionsDetectionTimeout;
+  uint32_t u32ProtectionsDetectionCountingTimeout;
+  uint32_t u32ProtectionsProtectionReleaseTimeout;
+  uint32_t u32ProtectionsClearTimeout;
+
+  const uint32_t ku32DetectionCountingTimeoutMs;
+  const uint32_t ku32DetectionTimeoutMs;
+  const uint32_t ku32ReleaseTimeoutMs;
+  const uint32_t ku32ProtectionStateClearTimeoutMs;
+
+  enProtectionState protectionState;
+
+  bool (*protectionsDetected)(void);
+  void (*protectionsDetectedCallback)(void);
+  bool (*protectionsReleased)(void);
+  void (*protectionsReleasedCallback)(void);
+
+} protections_params;
+
+// Define a mapping structure to directly associate message types with their corresponding member variables
+typedef struct
+{
+  enInterfaceMessageType interfaceMessageType; // Message type identifier
+  uint8_t *pDestination;                       // Pointer to the destination variable
+  const char *description;                     // Description for logging/debugging
+} stInterafaceMessageTypeMapping;
+
+// ########################################################################################################################################
+
+  namespace ModEffectArgs
+  {
+  enum EffectIdType : uint8_t
+  {
+    RGB_RED = 0,
+    RGB_GREEN,
+    RGB_BLUE,
+    BUZZER,
+  };
+
+    enum EffectStateType : uint8_t
+    {
+      STATE_RESET = 0,
+      STATE_SET,
+      STATE_FLASH,
+      STATE_FLASH_FAST,
+      STATE_BLINKSHORT,
+      STATE_BLINKLONG,
+      STATE_BLINKSHORTLONG_100_20,
+      STATE_BLINKSHORTLONG_1000_4,
+      // Added PWM-based effects (if supported by target)
+      STATE_FADE_IN,
+      STATE_FADE_OUT,
+      STATE_BREATH,
+      STATE_ON,
+      STATE_OFF
+    };
+  }
+
+namespace ProtectionConstants
+{
+  constexpr uint8_t MODULE_OUV_CONSECUTIVE_READINGS_THRESHOLD = 5;
+  constexpr uint32_t MODULE_OUV_DETECTION_COUNTING_TIMEOUT_MS = 500;
+  constexpr uint32_t MODULE_OUV_DETECTION_TIMEOUT_MS = 3000;
+  constexpr uint32_t MODULE_OUV_RELEASE_TIMEOUT_MS = 1000;
+
+  constexpr uint8_t MODULE_OCV_CONSECUTIVE_READINGS_THRESHOLD = 5;
+  constexpr uint32_t MODULE_OCV_DETECTION_COUNTING_TIMEOUT_MS = 500;
+  constexpr uint32_t MODULE_OCV_DETECTION_TIMEOUT_MS = 3000;
+  constexpr uint32_t MODULE_OCV_RELEASE_TIMEOUT_MS = 1000;
+
+  constexpr uint8_t MODULE_ODCV_CONSECUTIVE_READINGS_THRESHOLD = 5;
+  constexpr uint32_t MODULE_ODCV_DETECTION_COUNTING_TIMEOUT_MS = 500;
+  constexpr uint32_t MODULE_ODCV_DETECTION_TIMEOUT_MS = 3000;
+  constexpr uint32_t MODULE_ODCV_RELEASE_TIMEOUT_MS = 1000;
+
+  constexpr uint8_t MODULE_OV_CONSECUTIVE_READINGS_THRESHOLD = 5;
+  constexpr uint32_t MODULE_OV_DETECTION_COUNTING_TIMEOUT_MS = 500;
+  constexpr uint32_t MODULE_OV_DETECTION_TIMEOUT_MS = 3000;
+  constexpr uint32_t MODULE_OV_RELEASE_TIMEOUT_MS = 1000;
+  constexpr uint32_t MODULE_VOLTAGE_MARGIN_MV = 1000;
+
+  constexpr uint8_t MODULE_DCHG_OC_CONSECUTIVE_READINGS_THRESHOLD = 5;
+  constexpr uint32_t MODULE_DCHG_OC_DETECTION_COUNTING_TIMEOUT_MS = 500;
+  constexpr uint32_t MODULE_DCHG_OC_DETECTION_TIMEOUT_MS = 0;
+  constexpr uint32_t MODULE_DCHG_OC_RELEASE_TIMEOUT_MS = 10;
+  constexpr uint32_t MODULE_DCHG_OC_DETECTION_COUNTER = 5;
+
+  constexpr uint8_t MODULE_CHG_OC_CONSECUTIVE_READINGS_THRESHOLD = 5;
+  constexpr uint32_t MODULE_CHG_OC_DETECTION_COUNTING_TIMEOUT_MS = 500;
+  constexpr uint32_t MODULE_CHG_OC_DETECTION_TIMEOUT_MS = 0;
+  constexpr uint32_t MODULE_CHG_OC_RELEASE_TIMEOUT_MS = 10;
+  constexpr uint32_t MODULE_CHG_OC_DETECTION_COUNTER = 5;
+}
+typedef struct
+{
+  uint16_t cell_voltages[NoOfCELL_MONITORS_POSSIBLE_ON_BMS][NoOfCELL_POSSIBLE_ON_CHIP];
+} st_mail_cell_voltages_t;
+
+#endif // Settings

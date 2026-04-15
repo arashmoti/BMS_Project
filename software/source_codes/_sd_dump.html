@@ -1,0 +1,504 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8" />
+<title>BMS SD Analyzer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="x-bms-viewer-version" content="v33" />
+<style>
+  :root { --muted:#6b7280; --line:#e5e7eb; --bar:#f3f4f6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#fff; color:#111; }
+  header { position:sticky; top:0; z-index:10; background:var(--bar); border-bottom:1px solid var(--line); }
+  header .wrap { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:10px 14px; }
+  h1 { font-size:18px; margin:0; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; font-size:12px; }
+  .muted { color:var(--muted); }
+  .row { display:flex; gap:12px; padding:12px; flex-wrap:wrap; }
+  .col { flex:1 1 380px; min-width:320px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .col h2 { margin:0 0 8px 0; font-size:16px; }
+  .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button, input { font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  button { cursor:pointer; } button:active { transform: translateY(1px); }
+  .drop { border:2px dashed #cbd5e1; border-radius:12px; padding:14px; text-align:center; color:#64748b; }
+  .drop.drag { background:#f1f5f9; }
+  .grid { display:grid; grid-template-columns: minmax(260px,1fr); gap:12px; }
+  canvas { width:100%; height:240px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  .mini { font-size:12px; color:var(--muted); }
+  .terminal { height:260px; overflow:auto; background:#0b1020; color:#e5e7eb; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:10px; border-radius:8px; border:1px solid #111827; }
+  .term-row { white-space:pre-wrap; line-height:1.35; }
+  ul { margin:6px 0 0 18px; padding-left:14px; }
+  .badge { padding:3px 8px; border-radius:999px; background:#e5e7eb; font-size:12px; margin-right:6px; display:inline-block; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; }
+  .scroll200 { max-height:200px; overflow:auto; }
+  .stat { display:flex; justify-content:space-between; gap:12px; border-bottom:1px dashed #e5e7eb; padding:4px 0; }
+  .stat:last-child { border-bottom:0; }
+  a { color: inherit; text-decoration:none; }
+  .links { display:flex; gap:8px; align-items:center; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#e5e7eb; font-size:12px; }
+  .warn { color:#b91c1c; }
+  .ok { color:#15803d; }
+  .box { border:1px solid var(--line); border-radius:10px; padding:10px; background:#fff; }
+  .box .mini { margin:0 0 6px 0; }
+  .btn-sm { padding:4px 8px; font-size:12px; }
+  .right { margin-left:auto; }
+  .nowrap { white-space:nowrap; }
+  .labels { display:flex; gap:6px; flex-wrap:wrap; }
+  .labels > span { font-size:12px; color:#334155; background:#e2e8f0; padding:2px 6px; border-radius:8px; }
+  .flex { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .mr6 { margin-right:6px; }
+  .ml6 { margin-left:6px; }
+  .mt8 { margin-top:8px; }
+  .mt12 { margin-top:12px; }
+  .mt4 { margin-top:4px; }
+  .w120 { width:120px; }
+  .w90 { width:90px; }
+  .w200 { width:200px; }
+  .hidden { display:none; }
+  .center { text-align:center; }
+  .sep { height:1px; background:#e5e7eb; margin:8px 0; }
+</style>
+</head><body>
+<header>
+  <div class="wrap">
+    <div class="links">
+      <h1>BMS SD Analyzer</h1><span class="chip">v33</span>
+      <a class="pill" href="/"><- logs</a>
+      <a class="pill" href="/dash">dashboard -></a>
+    </div>
+    <div class="controls right">
+      <input id="fileInput" type="file" multiple class="w200" />
+      <button id="btnAnalyze">Analyze</button>
+      <button id="btnCsv">Export CSV</button>
+      <button id="btnPng">Save PNGs</button>
+      <button id="btnClear">Clear</button>
+    </div>
+  </div>
+</header>
+
+<div class="row">
+  <div class="col" style="flex:1 1 520px;">
+    <h2>Load SD Logs</h2>
+    <div id="drop" class="drop">Drop log files here or use the file picker above</div>
+    <div class="mini mt8">Parses known lines (Vmin/Vmax/SOC/Temp/Current, states & events) and charts them locally — no upload.</div>
+    <div id="labels" class="labels mt8"></div>
+  </div>
+  <div class="col" style="flex:1 1 320px;">
+    <h2>Summary</h2>
+    <div class="stat"><div>Lines read</div><div id="stLines">0</div></div>
+    <div class="stat"><div>Samples</div><div id="stSamples">0</div></div>
+    <div class="stat"><div>Vmin (V)</div><div id="stVmin">--</div></div>
+    <div class="stat"><div>Vmax (V)</div><div id="stVmax">--</div></div>
+    <div class="stat"><div>dV (mV)</div><div id="stDv">--</div></div>
+    <div class="stat"><div>Current (A)</div><div id="stCur">--</div></div>
+    <div class="stat"><div>SOC (%)</div><div id="stSoc">--</div></div>
+    <div class="stat"><div>Temp (degC)</div><div id="stTemp">--</div></div>
+    <div class="mini mt8" id="stNotes"></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col" style="flex:1 1 520px;">
+    <h2>Charts</h2>
+    <div class="grid">
+      <canvas id="voltCanvas"></canvas>
+      <canvas id="dvCanvas"></canvas>
+      <canvas id="currCanvas"></canvas>
+      <canvas id="socTempCanvas"></canvas>
+    </div>
+    <div class="mini mt4">Sampling per parsed line. Time labels show sample index.</div>
+  </div>
+  <div class="col" style="flex:1 1 320px;">
+    <h2>States & Events</h2>
+    <div class="badges" id="badges"></div>
+    <div class="box mt8">
+      <div class="mini"><strong>Registered Events</strong> <button id="clearReg" class="btn-sm">Clear</button></div>
+      <ul id="regList" class="scroll200"></ul>
+    </div>
+    <div class="box mt8">
+      <div class="mini"><strong>Events History</strong> <label class="ml6 nowrap"><input type="checkbox" id="histCritical" checked /> Critical only</label> <button id="clearHist" class="btn-sm">Clear</button></div>
+      <ul id="regHist" class="scroll200"></ul>
+    </div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col" style="flex:1 1 100%;">
+    <h2>Unparsed Lines (Terminal)</h2>
+    <div class="terminal" id="terminal"></div>
+  </div>
+</div>
+
+<script>(function(){
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('fileInput');
+  const btnAnalyze = document.getElementById('btnAnalyze');
+  const btnCsv = document.getElementById('btnCsv');
+  const btnPng = document.getElementById('btnPng');
+  const btnClear = document.getElementById('btnClear');
+  const labelsEl = document.getElementById('labels');
+  const termEl = document.getElementById('terminal');
+  const badgeEl = document.getElementById('badges');
+  const regListEl = document.getElementById('regList');
+  const regHistEl = document.getElementById('regHist');
+  const histCritical = document.getElementById('histCritical');
+  const clearRegBtn = document.getElementById('clearReg');
+  const clearHistBtn = document.getElementById('clearHist');
+  const ST = {lines:0, samples:0, vmin:null, vmax:null, dv:null, cmin:null, cmax:null, smin:null, smax:null, tmin:null, tmax:null};
+  function updStat(){
+    const fmt=(x,dec=2)=> x==null? '--' : Number(x).toFixed(dec);
+    document.getElementById('stLines').textContent=String(ST.lines);
+    document.getElementById('stSamples').textContent=String(ST.samples);
+    document.getElementById('stVmin').textContent=fmt(ST.vmin,3);
+    document.getElementById('stVmax').textContent=fmt(ST.vmax,3);
+    document.getElementById('stDv').textContent=ST.dv==null? '--' : String(Math.round(ST.dv));
+    document.getElementById('stCur').textContent=(ST.cmin==null&&ST.cmax==null)? '--' : (fmt(ST.cmin,2)+' .. '+fmt(ST.cmax,2));
+    document.getElementById('stSoc').textContent=(ST.smin==null&&ST.smax==null)? '--' : (fmt(ST.smin,1)+' .. '+fmt(ST.smax,1));
+    document.getElementById('stTemp').textContent=(ST.tmin==null&&ST.tmax==null)? '--' : (fmt(ST.tmin,1)+' .. '+fmt(ST.tmax,1));
+  }
+
+  class MiniPlot {
+    constructor(canvas, {series, y2Series=[], fixedLeft=null, fixedRight=null, showValuePanel=true, axisDecLeft=null, axisDecRight=null} = {}) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d');
+      this.series = series.map(s => ({label: s.label, color: s.color, data: []}));
+      this.y2Series = new Set(y2Series);
+      this.maxPoints = 1000;
+      this.fixedLeft = fixedLeft;
+      this.fixedRight = fixedRight;
+      this.showValuePanel = showValuePanel;
+      this.axisDecLeft = axisDecLeft;
+      this.axisDecRight = axisDecRight;
+      this.hidden = new Set();
+      this.labels = [];
+      this.hoverIndex = null;
+      // Mouse interactions for hover tooltip
+      const onMove = (e)=>{
+        try {
+          const r = this.canvas.getBoundingClientRect();
+          const x = e.clientX - r.left; const y = e.clientY - r.top;
+          if (!this._plotW || this._plotW <= 0) return;
+          const inside = (x >= this._L && x <= this._L + this._plotW && y >= this._T && y <= this._T + this._plotH);
+          if (!inside){ if (this.hoverIndex != null){ this.hoverIndex = null; this.draw(); } return; }
+          let gi = Math.round(((x - this._L) / this._plotW) * (this.maxPoints - 1));
+          gi = Math.max(0, Math.min(this.maxPoints - 1, gi));
+          if (gi !== this.hoverIndex){ this.hoverIndex = gi; this.draw(); }
+        } catch(err) {}
+      };
+      const onLeave = ()=>{ if (this.hoverIndex != null){ this.hoverIndex = null; this.draw(); } };
+      this.canvas.addEventListener('mousemove', onMove);
+      this.canvas.addEventListener('mouseleave', onLeave);
+      const RO = window.ResizeObserver || function(cb){ this.observe = function(){ window.addEventListener('resize', cb); cb(); }; };
+      this._resizeObserver = new RO(()=>this.resize());
+      this._resizeObserver.observe(canvas);
+      this.resize();
+    }
+    setHidden(index, hidden){ if(hidden) this.hidden.add(index); else this.hidden.delete(index); this.draw(); }
+    _fmtVal(v, label){ if (v==null || !isFinite(v)) return "--"; let dec=2; if (/\(V\)/.test(label)) dec=3; if (/\(mV\)/.test(label)) dec=0; else if (/%/.test(label)) dec=1; else if (/Temp/.test(label)) dec=1; return Number(v).toFixed(dec); }
+    resize(){ const dpr=window.devicePixelRatio||1; const r=this.canvas.getBoundingClientRect(); const W=Math.max(300,r.width), H=Math.max(140,r.height); this.canvas.width=W*dpr; this.canvas.height=H*dpr; this.ctx.setTransform(dpr,0,0,dpr,0,0); this._cssW=W; this._cssH=H; this.draw(); }
+    push(values, label){ for(let i=0;i<values.length;i++){ this.series[i].data.push(values[i]); } for(const s of this.series){ while(s.data.length>this.maxPoints) s.data.shift(); } if(label!==undefined){ this.labels.push(label); while(this.labels.length>this.maxPoints) this.labels.shift(); } this.draw(); }
+    _range(idxs){ let lo=Infinity, hi=-Infinity, any=false; for(const i of idxs){ const s=this.series[i]; for(const v of s.data){ if(v==null||!isFinite(v)) continue; any=true; if(v<lo) lo=v; if(v>hi) hi=v; } } if(!any) return {lo:0, hi:1, any:false}; if(hi===lo){ hi+=1; lo-=1; } const pad=(hi-lo)*0.1; return {lo:lo-pad, hi:hi+pad, any:true}; }
+    draw(){ const ctx=this.ctx, W=this._cssW, H=this._cssH; ctx.clearRect(0,0,W,H); const L=40,R=40,T=10,B=28; const plotW=W-L-R, plotH=H-T-B; this._L=L; this._R=R; this._T=T; this._B=B; this._plotW=plotW; this._plotH=plotH; ctx.strokeStyle="#ddd"; ctx.lineWidth=1; ctx.strokeRect(L,T,plotW,plotH);
+      const leftIdx=this.series.map((_,i)=>i).filter(i=>!this.y2Series.has(i)); const rightIdx=this.series.map((_,i)=>i).filter(i=>this.y2Series.has(i));
+      const dataL=this._range(leftIdx); const dataR=this._range(rightIdx.length?rightIdx:leftIdx);
+      const rL=this.fixedLeft? (dataL.any? {lo:Math.min(this.fixedLeft[0],dataL.lo), hi:Math.max(this.fixedLeft[1],dataL.hi)} : {lo:this.fixedLeft[0], hi:this.fixedLeft[1]}) : dataL;
+      const rR=this.fixedRight? (dataR.any? {lo:Math.min(this.fixedRight[0],dataR.lo), hi:Math.max(this.fixedRight[1],dataR.hi)} : {lo:this.fixedRight[0], hi:this.fixedRight[1]}) : dataR;
+      ctx.strokeStyle="#eee"; ctx.beginPath(); for(let g=1; g<=2; g++){ const y=T+plotH*g/3; ctx.moveTo(L,y); ctx.lineTo(L+plotW,y);} ctx.stroke();
+      ctx.fillStyle="#666"; ctx.font="12px system-ui, sans-serif"; const decL=(this.axisDecLeft??2), decR=(this.axisDecRight??2);
+      ctx.fillText(rL.hi.toFixed(decL), 4, T+10); ctx.fillText(rL.lo.toFixed(decL), 4, T+plotH);
+      ctx.fillText(rR.hi.toFixed(decR), W-36, T+10); ctx.fillText(rR.lo.toFixed(decR), W-36, T+plotH);
+      const n=Math.max(0, ...this.series.map(s=>s.data.length), this.labels.length); const xAt=(idx)=> L + (idx/(this.maxPoints-1))*plotW; const yAtL=(v)=> T + plotH*(1-((v-rL.lo)/(rL.hi-rL.lo))); const yAtR=(v)=> T + plotH*(1-((v-rR.lo)/(rR.hi-rR.lo)));
+      for(let i=0;i<this.series.length;i++){ if(this.hidden.has(i)) continue; const s=this.series[i]; ctx.lineWidth=2; ctx.strokeStyle=s.color; ctx.beginPath(); for(let idx=0; idx<s.data.length; idx++){ const v=s.data[idx]; if(v==null||!isFinite(v)) continue; const x=xAt((n - s.data.length) + idx); const y=(this.y2Series.has(i)? yAtR(v): yAtL(v)); if(idx===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);} ctx.stroke(); let lastVal=null; for(let k=s.data.length-1;k>=0;k--){ const vv=s.data[k]; if(vv!=null&&isFinite(vv)){ lastVal=vv; break; } } if(lastVal!=null){ const y=(this.y2Series.has(i)? yAtR(lastVal): yAtL(lastVal)); const yC=Math.max(T+8, Math.min(T+plotH-8, y)); ctx.beginPath(); ctx.fillStyle=s.color; ctx.arc(L+plotW-6, yC, 3, 0, Math.PI*2); ctx.fill(); const old=ctx.textAlign; ctx.textAlign='right'; ctx.fillStyle='#111'; ctx.font='12px system-ui, sans-serif'; ctx.fillText(this._fmtVal(lastVal, s.label), W-4, yC+4); ctx.textAlign=old; }
+        ctx.fillStyle=s.color; ctx.fillRect(L + i*120, H-16, 10,10); ctx.fillStyle='#333'; ctx.fillText(s.label, L + i*120 + 14, H-7);
+      }
+      // x labels
+      if(this.labels && this.labels.length){ try{ const ticks=5; ctx.fillStyle='#666'; const old=ctx.textAlign; ctx.textAlign='center'; ctx.font='11px system-ui, sans-serif'; for(let i=0;i<ticks;i++){ const gi=Math.round((n-1)*i/(ticks-1)); const li=Math.min(this.labels.length-1, Math.max(0, gi - (n - this.labels.length))); const lbl=this.labels[li]??''; const x=xAt(gi); ctx.fillText(lbl, x, T+plotH+16);} ctx.textAlign=old; }catch(e){} }
+
+      // Hover crosshair + tooltip
+      if (this.hoverIndex != null && n > 0){
+        try{
+          const gi = this.hoverIndex;
+          const x = xAt(gi);
+          // crosshair line
+          ctx.strokeStyle = '#aaa'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, T+plotH); ctx.stroke();
+          // Collect values at this index
+          const rows = [];
+          const li = Math.min(this.labels.length-1, Math.max(0, gi - (n - this.labels.length)));
+          const timeLbl = this.labels[li] ?? '';
+          rows.push({label:'time', color:'#666', value: timeLbl});
+          // Helper to map global index to series local index
+          const valueAt = (s)=>{ const offset = n - s.data.length; const idx = gi - offset; if (idx >= 0 && idx < s.data.length) return s.data[idx]; return null; };
+          for (let i=0;i<this.series.length;i++){
+            if (this.hidden.has(i)) continue; const s=this.series[i]; const v=valueAt(s);
+            rows.push({label:s.label, color:s.color, value: (v==null||!isFinite(v))? '--' : this._fmtVal(v, s.label)});
+            if (v!=null && isFinite(v)){
+              const y=(this.y2Series.has(i)? yAtR(v) : yAtL(v));
+              ctx.beginPath(); ctx.fillStyle=s.color; ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill();
+            }
+          }
+          // Tooltip box size
+          ctx.font = '12px system-ui, sans-serif';
+          let maxW=0; rows.forEach(r=>{ const w = ctx.measureText(r.label + ': ' + r.value).width; if (w>maxW) maxW=w; });
+          const padX=8, padY=6, rowH=18; const boxW = maxW + padX*2; const boxH = padY*2 + rowH*rows.length;
+          let bx = L+6, by = T+6;
+          if (x - L < boxW + 12) { bx = L + 6; } else { bx = x - boxW - 8; }
+          if (by + boxH > T + plotH) by = T + plotH - boxH - 6;
+          ctx.fillStyle='rgba(255,255,255,0.95)'; ctx.fillRect(bx,by,boxW,boxH);
+          ctx.strokeStyle='#ddd'; ctx.strokeRect(bx,by,boxW,boxH);
+          rows.forEach((r,idx)=>{ const y = by + padY + idx*rowH + 12; ctx.fillStyle = (idx===0? '#111' : r.color); ctx.fillText(r.label + ': ' + r.value, bx+padX, y); });
+        }catch(e){}
+      }
+    }
+  }
+
+  // Charts
+  const voltChart = new MiniPlot(document.getElementById('voltCanvas'), { series:[{label:'Vmax (V)', color:'#dc2626'},{label:'Vmin (V)', color:'#2563eb'}], fixedLeft:[3.0,3.65], axisDecLeft:3 });
+  const dvChart   = new MiniPlot(document.getElementById('dvCanvas'),   { series:[{label:'dV (mV)', color:'#111827'}], fixedLeft:[0,50] });
+  const currChart = new MiniPlot(document.getElementById('currCanvas'), { series:[{label:'Current (A)', color:'#10b981'}], fixedLeft:[-100,100] });
+  const stChart   = new MiniPlot(document.getElementById('socTempCanvas'), { series:[{label:'SOC (%)', color:'#7c3aed'},{label:'Temp (degC)', color:'#f59e0b'}], y2Series:[1], fixedLeft:[0,100] });
+
+  // Parsing helpers (aligned with dash page)
+  function parseNumberFrom(text, startIdx){ const sub=text.slice(startIdx); const m=sub.match(/[+\-]?\d+(?:\.\d+)?/); return m? parseFloat(m[0]) : null; }
+  function findKeyValue(line, keys){ const low=line.toLowerCase(); for(const k of keys){ let idx = low.indexOf(k); while(idx!==-1){ let j = idx + k.length; while(j<line.length && /\s/.test(line[j])) j++; if(j<line.length && (line[j] === ':' || line[j] === '=')) j++; while (j<line.length && /\s/.test(line[j])) j++; const num = parseNumberFrom(line, j); if (num !== null) return num; idx = low.indexOf(k, idx+1);} } return null; }
+  function convVolt(x){ return (x!=null && x>60)? x/1000 : x; }
+  function convSOC(x){ if (x==null) return null; if (x>100 && x<=1000) return x/10; if (x>1000) return x/100; return x; }
+  function convCurr(x){ if (x==null) return null; if (Math.abs(x)>=30 && !(/[0-9]\./.test(String(x)))) return x/1000; return x; }
+  const KEYSETS = { vmin:['vmin','v_min','minv'], vmax:['vmax','v_max','maxv'], soc:['soc','stateofcharge'], temp:['temp','t','temperature'], curr:['current','i','iavg','ibatt'] };
+  const RE_OP_STATE = /^-{5}\s*OP_STATE_([A-Z_]+):\s*bmsState:\s*([A-Z]+)/;
+  const RE_EVENT_PREFIXES = [
+    {re:/^OpState->(INIT|CHARGING|PRE_CHARGE|LOAD_ENABLED|BATTERY_DEAD|POWER_DOWN|EXTERNAL|ERROR|ERROR_PRECHARGE|BALANCING|CHARGED|FORCEON)$/, field:'op_state'},
+    {re:/^BMS->(IDLE|DISCHARGE|CHARGE)$/, field:'bms_state'},
+    {re:/^OV->(NORMAL|TRIPPED|RECOVERY)$/, field:'ov_state'},
+    {re:/^UV->(NORMAL|TRIPPED|RECOVERY)$/, field:'uv_state'},
+    {re:/^OT->(NORMAL|TRIPPED|RECOVERY)$/, field:'ot_state'},
+    {re:/^UT->(NORMAL|TRIPPED|RECOVERY)$/, field:'ut_state'},
+    {re:/^OC->(NORMAL|TRIPPED|RECOVERY)$/, field:'oc_state'},
+    {re:/^SC->(NORMAL|TRIPPED|RECOVERY)$/, field:'sc_state'},
+    {re:/^INV->(OK|FAULT)$/, field:'inv_state'},
+    {re:/^ChargerDetected->(ON|OFF)$/, field:'charger'},
+    {re:/^ChargeBalanceActive->(ON|OFF)$/, field:'balance_window'},
+    {re:/^SOA_D->(IN|OUT)$/, field:'soa_discharge'},
+    {re:/^SOA_C->(IN|OUT)$/, field:'soa_charge'},
+    {re:/^PowerdownFlag->(SET|CLR)$/, field:'powerdown_flag'},
+    {re:/^SOC_SaveReq->(SET|CLR)$/, field:'soc_save'},
+    {re:/^SD_ERR_CELL:(\d+)$/, field:'sd_err_cell_code'},
+    {re:/^SD_ERR_TEMP:(\d+)$/, field:'sd_err_temp_code'},
+    {re:/^SD_ERR_SYS:(\d+)$/, field:'sd_err_sys_code'}
+  ];
+
+  function termAppend(line){ const d=document.createElement('div'); d.className='term-row'; d.textContent=line; termEl.appendChild(d); while(termEl.children.length>2000) termEl.removeChild(termEl.firstChild); termEl.scrollTop = termEl.scrollHeight; }
+  const state = { op_state:null, bms_state:null, ov_state:null, inv_state:null, charger:null, balance_window:null, soa_discharge:null, soa_charge:null, powerdown_flag:null, soc_save:null };
+  const reg = { events:{}, hist:[] };
+  function recordReg(name, val){ if(!name) return; const n=String(name); if(!reg.events[n]) reg.events[n]={count:0,last:null,at:0}; const e=reg.events[n]; const changed=String(e.last)!==String(val); e.count=(e.count||0)+1; e.last=(val==null? null:String(val)); e.at=Date.now(); if(changed) pushHist(n,e.last,false); renderReg(); }
+  function pushHist(name, val, critical){ if(!Array.isArray(reg.hist)) reg.hist=[]; reg.hist.push({name,val,at:Date.now(),critical:!!critical}); if(reg.hist.length>400) reg.hist=reg.hist.slice(-400); renderHist(); }
+  function recordProt(name, val, criticalVals){ const key='prot:'+String(name); if(!reg.events[key]) reg.events[key]={count:0,last:null,at:0}; const e=reg.events[key]; const prev=e.last; let should=false; if(Array.isArray(criticalVals)){ const up=String(val).toUpperCase(); should=criticalVals.includes(up);} else if(typeof val==='number'){ should=(val!==0);} else { const up=String(val).toUpperCase(); should=(up && !['NORMAL','OK','IN','CLR','--'].includes(up)); } const changed=String(prev)!==String(val); if(should && changed) e.count=(e.count||0)+1; e.last=val; e.at=Date.now(); if(changed) pushHist(key,val,!!should); renderReg(); }
+  function renderReg(){ if(!regListEl) return; regListEl.innerHTML=''; const names=Object.keys(reg.events).sort(); for(const name of names){ const e=reg.events[name]; const li=document.createElement('li'); const ts=e.at? (' @ '+new Date(e.at).toLocaleTimeString()):''; const isProt=name.startsWith('prot:'); const disp=isProt? ('PROT '+name.slice(5)) : name; li.textContent=disp+' -> '+(e.last??'--')+' ('+(e.count||0)+')'+ts; if(isProt){ const up=String(e.last||'').toUpperCase(); if(['TRIPPED','OUT','FAULT','SET'].includes(up) || (typeof e.last==='number' && e.last!==0)){ li.style.color='#b91c1c'; } } regListEl.appendChild(li); } }
+  function renderHist(){ if(!regHistEl) return; regHistEl.innerHTML=''; const critOnly=!!(histCritical && histCritical.checked); const arr=Array.isArray(reg.hist)? reg.hist:[]; for(const it of arr){ if(critOnly && !it.critical) continue; const li=document.createElement('li'); const t=new Date(it.at).toLocaleTimeString(); const disp=it.name.startsWith('prot:')? ('PROT '+it.name.slice(5)) : it.name; li.textContent='['+t+'] '+disp+' -> '+it.val; if(it.critical) li.style.color='#b91c1c'; regHistEl.appendChild(li);} }
+
+  function renderBadges(){ badgeEl.innerHTML=''; Object.entries(state).forEach(([k,v])=>{ if(v==null) return; const b=document.createElement('span'); b.className='badge'; b.textContent=`${k}:${v}`; badgeEl.appendChild(b); }); }
+
+  const samples=[]; const latest={vmin:null,vmax:null,soc:null,temp:null,curr:null};
+  // CSV parsing state
+  let csvType = null; // 'sys' | 'cell' | 'events' | 'temp'
+  let csvHdr = null;  // array of header columns
+  function tryCSVHeader(line){
+    const t = line.replace(/﻿/, '').trim();
+    if (!/^timeLogging\s*,/i.test(t)) return false;
+    const hdr = t.split(',').map(s=>s.trim());
+    if (hdr.some(h=>/ModuleVoltage/i.test(h))) { csvType='sys'; csvHdr=hdr; return true; }
+    if (hdr.some(h=>/cellVoltage0/i.test(h)))   { csvType='cell'; csvHdr=hdr; return true; }
+    if (hdr.some(h=>/temperature1/i.test(h)))   { csvType='temp'; csvHdr=hdr; return true; }
+    if (hdr.some(h=>/event/i.test(h)))          { csvType='events'; csvHdr=hdr; return true; }
+    return false;
+  }
+  function idxOf(name){ if (!csvHdr) return -1; const i = csvHdr.findIndex(h=> h===name); return i; }
+  function processCSV(line){
+    const t = line.replace(/﻿/, '').trim(); if (!t) return false;
+    // Header detection
+    if (tryCSVHeader(t)) return 'header';
+    if (!csvType || !csvHdr) return false;
+    // Guard: ignore obviously non-data lines
+    if (!/^[-+0-9]/.test(t)) return false;
+    const parts = t.split(',');
+    try {
+      if (csvType === 'sys'){
+        // Expect systemInformationLog.csv columns
+        const iVmin = csvHdr.findIndex(h=> /MinCellVoltage/i.test(h));
+        const iVmax = csvHdr.findIndex(h=> /MaxCellVoltage/i.test(h));
+        const iSOC  = csvHdr.findIndex(h=> /^SOC$/i.test(h));
+        const iTemp = csvHdr.findIndex(h=> /AvgTemperature/i.test(h));
+        const iCur  = csvHdr.findIndex(h=> /ModuleCurrent/i.test(h));
+        const vminRaw = (iVmin>=0? parseFloat(parts[iVmin]) : NaN);
+        const vmaxRaw = (iVmax>=0? parseFloat(parts[iVmax]) : NaN);
+        const socRaw  = (iSOC>=0 ? parseFloat(parts[iSOC])  : NaN);
+        const tempRaw_mdeg = (iTemp>=0 ? parseFloat(parts[iTemp]) : NaN);
+        const tempRaw = isNaN(tempRaw_mdeg) ? NaN : (tempRaw_mdeg/1000);
+        const curRaw_mA  = (iCur>=0 ? parseFloat(parts[iCur])  : NaN);
+        const curRaw = isNaN(curRaw_mA) ? NaN : (curRaw_mA/1000);
+        if (!isNaN(vminRaw)) latest.vmin = convVolt(vminRaw);
+        if (!isNaN(vmaxRaw)) latest.vmax = convVolt(vmaxRaw);
+        if (!isNaN(socRaw))  latest.soc  = convSOC(socRaw);
+        if (!isNaN(tempRaw)) latest.temp = tempRaw;
+        if (!isNaN(curRaw))  latest.curr = curRaw;
+        pushSample(String(samples.length));
+        return 'sample';
+      }
+      if (csvType === 'cell'){
+        // cellVoltageLog.csv: time,(optional module),cellVoltage0..15
+        // Find the first cell column index in header
+        let c0 = csvHdr.findIndex(h=> /cellVoltage0/i.test(h));
+        if (c0 < 0) return false;
+        const vals = [];
+        for (let i=0;i<16;i++){
+          const idx = c0 + i; if (idx >= parts.length) break;
+          const n = parseFloat(parts[idx]); if (!isNaN(n)) vals.push(n);
+        }
+        if (vals.length){
+          // raw mV values
+          const vminRaw = Math.min.apply(null, vals);
+          const vmaxRaw = Math.max.apply(null, vals);
+          latest.vmin = convVolt(vminRaw);
+          latest.vmax = convVolt(vmaxRaw);
+          pushSample(String(samples.length));
+          return 'sample';
+        }
+        return false;
+      }
+            if (csvType === 'temp'){
+        // packTemperatureLog.csv: time,(implicit module),temperature1..8 (milli-degC)
+        const idxs = [];
+        for (let i=0;i<csvHdr.length;i++){
+          if (/^temperature\d+$/i.test(csvHdr[i])) idxs.push(i);
+        }
+        let temps = [];
+        if (idxs.length){
+          for (const i of idxs){ const v = parseFloat(parts[i]); if (!isNaN(v)) temps.push(v); }
+        } else {
+          for (let k=Math.max(0, parts.length-8); k<parts.length; k++){ const v = parseFloat(parts[k]); if (!isNaN(v)) temps.push(v); }
+        }
+        if (temps.length){
+          const tempsC = temps.map(v=> v/1000);
+          const avg = tempsC.reduce((a,b)=>a+b,0)/tempsC.length;
+          latest.temp = avg;
+          pushSample(String(samples.length));
+          return 'sample';
+        }
+        return false;
+      }if (csvType === 'events'){
+        const iEv = csvHdr.findIndex(h=> /event/i.test(h));
+        if (iEv>=0){ const ev = parts.slice(iEv).join(',').trim(); if (ev){ termAppend(ev); return 'event'; } }
+        return false;
+      }
+      // temp block: not used for charts directly
+      return false;
+    } catch(e){ return false; }
+  }
+  function pushSample(idxLabel){ const dv=(latest.vmax!=null&&latest.vmin!=null)? (latest.vmax-latest.vmin) : null; const dv_mV=(dv==null? null: dv*1000);
+    voltChart.push([latest.vmax!=null?latest.vmax:null, latest.vmin!=null?latest.vmin:null], idxLabel);
+    dvChart.push([dv_mV!=null? dv_mV:null], idxLabel);
+    currChart.push([latest.curr!=null? latest.curr:null], idxLabel);
+    stChart.push([latest.soc!=null? latest.soc:null, latest.temp!=null? latest.temp:null], idxLabel);
+    samples.push({ts:idxLabel,vmin:latest.vmin,vmax:latest.vmax,curr:latest.curr,soc:latest.soc,temp:latest.temp,dv_mV});
+    // stats
+    ST.samples = samples.length;
+    if(latest.vmin!=null) ST.vmin = (ST.vmin==null? latest.vmin : Math.min(ST.vmin, latest.vmin));
+    if(latest.vmax!=null) ST.vmax = (ST.vmax==null? latest.vmax : Math.max(ST.vmax, latest.vmax));
+    if(dv_mV!=null) ST.dv = (ST.dv==null? dv_mV : Math.max(ST.dv, dv_mV));
+    if(latest.curr!=null){ ST.cmin = (ST.cmin==null? latest.curr : Math.min(ST.cmin, latest.curr)); ST.cmax=(ST.cmax==null? latest.curr : Math.max(ST.cmax, latest.curr)); }
+    if(latest.soc!=null){ ST.smin = (ST.smin==null? latest.soc : Math.min(ST.smin, latest.soc)); ST.smax=(ST.smax==null? latest.soc : Math.max(ST.smax, latest.soc)); }
+    if(latest.temp!=null){ ST.tmin = (ST.tmin==null? latest.temp : Math.min(ST.tmin, latest.temp)); ST.tmax=(ST.tmax==null? latest.temp : Math.max(ST.tmax, latest.temp)); }
+    updStat();
+  }
+
+  function tryParseState(line){ const m=RE_OP_STATE.exec(line); if(m){ state.op_state=m[1]; state.bms_state=m[2]; recordReg('op_state', m[1]); recordReg('bms_state', m[2]); renderBadges(); return true; }
+    for(const e of RE_EVENT_PREFIXES){ const mm=e.re.exec(line.trim()); if(mm){ const val=mm[1]; state[e.field]=val; recordReg(e.field,val); switch(e.field){ case 'ov_state': recordProt('OV', val, ['TRIPPED','RECOVERY']); break; case 'uv_state': recordProt('UV', val, ['TRIPPED','RECOVERY']); break; case 'ot_state': recordProt('OT', val, ['TRIPPED','RECOVERY']); break; case 'ut_state': recordProt('UT', val, ['TRIPPED','RECOVERY']); break; case 'oc_state': recordProt('OC', val, ['TRIPPED','RECOVERY']); break; case 'sc_state': recordProt('SC', val, ['TRIPPED','RECOVERY']); break; case 'inv_state': recordProt('INV', val, ['FAULT']); break; case 'soa_discharge': recordProt('SOA_D', val, ['OUT']); break; case 'soa_charge': recordProt('SOA_C', val, ['OUT']); break; case 'powerdown_flag': recordProt('PDN', val, ['SET']); break; default: if(e.field==='sd_err_cell_code'||e.field==='sd_err_temp_code'||e.field==='sd_err_sys_code'){ const num=Number(val); const name=e.field.replace('_code','').toUpperCase(); recordProt(name, Number.isFinite(num)? num:0);} }
+      renderBadges(); return true; } } return false; }
+
+    function tryParseLegacyCsv(line){
+    try{
+      const t = String(line||'').trim();
+      if (!/^[0-9]+(?:\s*,\s*[0-9]+)+$/.test(t)) return false;
+      const parts = t.split(',').map(s=>s.trim());
+      if (parts.length < 8) return false;
+      const num = i => { const v = parseFloat(parts[i]); return Number.isFinite(v) ? v : null; };
+      const vmax_mV = num(4), vmin_mV = num(5), curr_mA = num(2), temp_dC = num(3);
+      if (vmin_mV != null) latest.vmin = vmin_mV/1000;
+      if (vmax_mV != null) latest.vmax = vmax_mV/1000;
+      if (curr_mA != null) latest.curr = curr_mA/1000;
+      if (temp_dC != null) latest.temp = temp_dC/10;
+      latest.updatedAt = Date.now();
+      return true;
+    } catch(e){ return false; }
+  }
+function processLine(line){
+    if (tryParseLegacyCsv(line)) return 'sample';
+
+    const vmin = findKeyValue(line, KEYSETS.vmin);
+    const vmax = findKeyValue(line, KEYSETS.vmax);
+    const soc  = findKeyValue(line, KEYSETS.soc);
+    const temp = findKeyValue(line, KEYSETS.temp);
+    const curr = findKeyValue(line, KEYSETS.curr);
+    let parsed=false;
+    if (vmin!=null){ latest.vmin=convVolt(vmin); parsed=true; }
+    if (vmax!=null){ latest.vmax=convVolt(vmax); parsed=true; }
+    if (soc!=null) { latest.soc =convSOC(soc);   parsed=true; }
+    if (temp!=null){ latest.temp=temp;           parsed=true; }
+    if (curr!=null){ latest.curr=convCurr(curr); parsed=true; }
+    if (parsed) return 'sample';
+    if (tryParseState(line)) return 'event';
+    return false;
+  }
+
+  function analyzeText(text){
+    // reset
+    termEl.innerHTML=''; badgeEl.innerHTML=''; regListEl.innerHTML=''; regHistEl.innerHTML='';
+    samples.length=0; Object.keys(state).forEach(k=> state[k]=null);
+    latest.vmin=latest.vmax=latest.soc=latest.temp=latest.curr=null;
+    ST.lines=0; ST.samples=0; ST.vmin=ST.vmax=ST.dv=ST.cmin=ST.cmax=ST.smin=ST.smax=ST.tmin=ST.tmax=null; updStat();
+    voltChart.series.forEach(s=> s.data=[]); dvChart.series.forEach(s=>s.data=[]); currChart.series.forEach(s=>s.data=[]); stChart.series.forEach(s=>s.data=[]);
+    voltChart.labels=dvChart.labels=currChart.labels=stChart.labels=[]; voltChart.draw(); dvChart.draw(); currChart.draw(); stChart.draw();
+    const lines = String(text||'').replace(/\r/g,'').split('\n');
+    ST.lines = lines.length; updStat();
+    let idx=0; for(const line of lines){
+      if(!line) { idx++; continue; }
+      const rCSV = processCSV(line);
+      if (rCSV === 'sample' || rCSV === 'event' || rCSV === 'header'){ idx++; continue; }
+      const r = processLine(line);
+      if(r==='sample'){ pushSample(String(idx)); } else if(!r){ termAppend(line); }
+      idx++;
+    }
+    renderReg(); renderHist(); renderBadges();
+    try { var noteEl=document.getElementById('stNotes'); if (noteEl) { noteEl.textContent = (ST.samples>0? '' : 'No samples parsed. Check CSV headers (timeLogging, ...)'); } } catch(e){}
+  }
+
+  function readFiles(files){ if(!files || !files.length) return; labelsEl.innerHTML='';
+    const readers=[]; const names=[];
+    for(const f of files){ names.push(f.name); readers.push(new Promise((resolve,reject)=>{ const fr=new FileReader(); fr.onload=()=>resolve(String(fr.result||'')); fr.onerror=()=>reject(fr.error||new Error('read error')); fr.readAsText(f); })); }
+    Promise.all(readers).then(parts=>{ const text=parts.join('\n'); const lab=document.createElement('span'); lab.textContent='Files: '+names.join(', '); labelsEl.appendChild(lab); analyzeText(text); }).catch(err=>{ const lab=document.createElement('span'); lab.textContent='Read error: '+(err && err.message? err.message: String(err)); labelsEl.appendChild(lab); });
+  }
+
+  // Export
+  btnCsv.addEventListener('click', ()=>{
+    const rows = [['sample','vmin','vmax','dV_mV','current_A','SOC_pct','temp_degC']];
+    for(const s of samples){ rows.push([s.ts, s.vmin, s.vmax, s.dv_mV, s.curr, s.soc, s.temp]); }
+    const csv = rows.map(r=> r.map(x=> x==null? '': x).join(',')).join('\n');
+    const blob = new Blob([csv], {type:'text/csv'}); const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download='bms_sd_analyzed.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  });
+  btnPng.addEventListener('click', ()=>{
+    const items=[{id:'voltCanvas',name:'sd_volt.png'},{id:'dvCanvas',name:'sd_dv.png'},{id:'currCanvas',name:'sd_curr.png'},{id:'socTempCanvas',name:'sd_soc_temp.png'}];
+    items.forEach(c=>{ const el=document.getElementById(c.id); if(!el) return; const url=el.toDataURL('image/png'); const a=document.createElement('a'); a.href=url; a.download=c.name; a.click(); });
+  });
+  btnClear.addEventListener('click', ()=>{ analyzeText(''); labelsEl.innerHTML=''; });
+
+  // file/dnd
+  btnAnalyze.addEventListener('click', ()=> readFiles(fileInput.files));
+  fileInput.addEventListener('change', ()=> readFiles(fileInput.files));
+  ;['dragenter','dragover'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('drag'); }));
+  ;['dragleave','drop'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.remove('drag'); }));
+  drop.addEventListener('drop', e=>{ const files=e.dataTransfer && e.dataTransfer.files; if(files && files.length) readFiles(files); });
+
+  if (clearRegBtn) clearRegBtn.addEventListener('click', ()=>{ reg.events={}; renderReg(); });
+  if (clearHistBtn) clearHistBtn.addEventListener('click', ()=>{ reg.hist=[]; renderHist(); });
+  if (histCritical) histCritical.addEventListener('change', ()=> renderHist());
+})();</script>
+</body></html>

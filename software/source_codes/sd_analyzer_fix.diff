@@ -1,0 +1,118 @@
+*** Update File: bms_viewer.py
+@@
+ SD_ANALYZER_HTML = """<!doctype html>
+@@
+   function tryCSVHeader(line){
+     const t = line.trim();
+     if (!/^timeLogging\s*,/i.test(t)) return false;
+     const hdr = t.split(',').map(s=>s.trim());
+     if (hdr.some(h=>/ModuleVoltage/i.test(h))) { csvType='sys'; csvHdr=hdr; return true; }
+     if (hdr.some(h=>/cellVoltage0/i.test(h)))   { csvType='cell'; csvHdr=hdr; return true; }
+-    if (hdr.some(h=>/temperature1/i.test(h)))   { csvType='temp'; csvHdr=hdr; return true; }
++    if (hdr.some(h=>/temperature\d+/i.test(h)))   { csvType='temp'; csvHdr=hdr; return true; }
+     if (hdr.some(h=>/event/i.test(h)))          { csvType='events'; csvHdr=hdr; return true; }
+     return false;
+   }
+@@
+   function processCSV(line){
+     const t = line.trim(); if (!t) return false;
+     // Header detection
+     if (tryCSVHeader(t)) return 'header';
+     if (!csvType || !csvHdr) return false;
+     // Guard: ignore obviously non-data lines
+     if (!/^[-+0-9]/.test(t)) return false;
+     const parts = t.split(',');
+     try {
+       if (csvType === 'sys'){
+         // Expect systemInformationLog.csv columns
+         const iVmin = csvHdr.findIndex(h=> /MinCellVoltage/i.test(h));
+         const iVmax = csvHdr.findIndex(h=> /MaxCellVoltage/i.test(h));
+         const iSOC  = csvHdr.findIndex(h=> /^SOC$/i.test(h));
+-        const iTemp = csvHdr.findIndex(h=> /AvgTemperature/i.test(h));
+-        const iCur  = csvHdr.findIndex(h=> /ModuleCurrent/i.test(h));
++        const iTemp = csvHdr.findIndex(h=> /AvgTemperature/i.test(h));
++        const iCur  = csvHdr.findIndex(h=> /ModuleCurrent/i.test(h));
+         const vminRaw = (iVmin>=0? parseFloat(parts[iVmin]) : NaN);
+         const vmaxRaw = (iVmax>=0? parseFloat(parts[iVmax]) : NaN);
+         const socRaw  = (iSOC>=0 ? parseFloat(parts[iSOC])  : NaN);
+-        const tempRaw = (iTemp>=0 ? parseFloat(parts[iTemp]) : NaN);
+-        const curRaw  = (iCur>=0 ? parseFloat(parts[iCur])  : NaN);
++        // Firmware logs temperatures in milli-degC; convert to degC
++        const tempRaw_mdeg = (iTemp>=0 ? parseFloat(parts[iTemp]) : NaN);
++        const tempRaw = isNaN(tempRaw_mdeg) ? NaN : (tempRaw_mdeg/1000);
++        // Firmware logs current in mA; convert to A
++        const curRaw_mA  = (iCur>=0 ? parseFloat(parts[iCur])  : NaN);
++        const curRaw = isNaN(curRaw_mA) ? NaN : (curRaw_mA/1000);
+         if (!isNaN(vminRaw)) latest.vmin = convVolt(vminRaw);
+         if (!isNaN(vmaxRaw)) latest.vmax = convVolt(vmaxRaw);
+         if (!isNaN(socRaw))  latest.soc  = convSOC(socRaw);
+-        if (!isNaN(tempRaw)) latest.temp = tempRaw; // degrees C assumed
+-        if (!isNaN(curRaw))  {
+-          // Firmware uses deci-amps in many places; convert heuristically
+-          let ca = curRaw;
+-          if (Math.abs(ca) > 1000) ca = ca/1000; else if (Math.abs(ca)>50) ca=ca/10; // try to land in a sensible A range
+-          latest.curr = ca;
+-        }
++        if (!isNaN(tempRaw)) latest.temp = tempRaw;
++        if (!isNaN(curRaw))  latest.curr = curRaw;
+         pushSample(String(samples.length));
+         return 'sample';
+       }
+       if (csvType === 'cell'){
+         // cellVoltageLog.csv: time,(optional module),cellVoltage0..15
+         // Find the first cell column index in header
+         let c0 = csvHdr.findIndex(h=> /cellVoltage0/i.test(h));
+         if (c0 < 0) return false;
+         const vals = [];
+         for (let i=0;i<16;i++){
+           const idx = c0 + i; if (idx >= parts.length) break;
+           const n = parseFloat(parts[idx]); if (!isNaN(n)) vals.push(n);
+         }
+         if (vals.length){
+           // raw mV values
+           const vminRaw = Math.min.apply(null, vals);
+           const vmaxRaw = Math.max.apply(null, vals);
+           latest.vmin = convVolt(vminRaw);
+           latest.vmax = convVolt(vmaxRaw);
+           pushSample(String(samples.length));
+           return 'sample';
+         }
+         return false;
+       }
++      if (csvType === 'temp'){
++        // packTemperatureLog.csv: time,(implicit module column in data),temperature1..8
++        // Header lacks the module column; data contains it as the second field.
++        // We'll collect all temperatureN columns present in header, and if the
++        // data row includes an extra module column, the indices still align for N>=1.
++        const idxs = [];
++        for (let i=0;i<csvHdr.length;i++){
++          if (/^temperature\d+$/i.test(csvHdr[i])) idxs.push(i);
++        }
++        // Fallback: if header malformed, try to read last 8 numeric fields
++        let temps = [];
++        if (idxs.length){
++          for (const i of idxs){ const v = parseFloat(parts[i]); if (!isNaN(v)) temps.push(v); }
++        } else {
++          for (let k=Math.max(0, parts.length-8); k<parts.length; k++){ const v = parseFloat(parts[k]); if (!isNaN(v)) temps.push(v); }
++        }
++        if (temps.length){
++          // Firmware logs temps in milli-degC
++          const tempsC = temps.map(v=> v/1000);
++          // Use average of available sensors as latest temp
++          const avg = tempsC.reduce((a,b)=>a+b,0)/tempsC.length;
++          latest.temp = avg;
++          pushSample(String(samples.length));
++          return 'sample';
++        }
++        return false;
++      }
+       if (csvType === 'events'){
+         const iEv = csvHdr.findIndex(h=> /event/i.test(h));
+         if (iEv>=0){ const ev = parts.slice(iEv).join(',').trim(); if (ev){ termAppend(ev); return 'event'; } }
+         return false;
+       }
+       // temp block: not used for charts directly
+       return false;
+     } catch(e){ return false; }
+   }
+

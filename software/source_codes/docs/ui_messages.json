@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "description": "Catalog of terminal log messages and event patterns for UI parsing",
+  "status_patterns": [
+    {
+      "id": "pack_status",
+      "category": "status",
+      "format": " Vmin:%u.%03u V, Vmax:%u.%03u V, SOC:%u.%u%%, Temp:%d C, Current:%s%u.%02u A, Rem:%u.%02u Ah, Cap:%u Ah, Slope:%s%u.%02u mAh/s (~%s%u.%02u A), BMS State:%s",
+      "regex": "^\\s*Vmin:(\\d+)\\.(\\d{3}) V, Vmax:(\\d+)\\.(\\d{3}) V, SOC:(\\d+)\\.(\\d)%\\%, Temp:(-?\\d+) C, Current:([+-]?)(\\d+)\\.(\\d{2}) A, Rem:(\\d+)\\.(\\d{2}) Ah, Cap:(\\d+) Ah, Slope:([+-]?)(\\d+)\\.(\\d{2}) mAh/s \(~([+-]?)(\\d+)\\.(\\d{2}) A\), BMS State:([A-Z]+)\\s*$",
+      "fields": [
+        "vmin_V_int", "vmin_V_frac3", "vmax_V_int", "vmax_V_frac3",
+        "soc_int", "soc_frac1", "temp_C", "cur_sign", "cur_A_int", "cur_A_frac2",
+        "rem_Ah_int", "rem_Ah_frac2", "cap_Ah", "slope_sign", "slope_centi_mAh_s_int",
+        "slope_centi_mAh_s_frac2", "iest_sign", "iest_A_int", "iest_A_frac2", "bms_state"
+      ]
+    },
+    {
+      "id": "op_state_debug",
+      "category": "debug",
+      "format": "----- OP_STATE_%s: bmsState: %s",
+      "regex": "^-{5} OP_STATE_([A-Z_]+): bmsState: ([A-Z]+)\\s*$",
+      "fields": ["op_state", "bms_state"]
+    },
+    {
+      "id": "inverter_ack_timeout",
+      "category": "warn",
+      "format": "!!! Inverter ACK timeout — opening CHARGE only, staying online.",
+      "regex": "^!!! Inverter ACK timeout .*opening CHARGE only, staying online\\.\\s*$",
+      "fields": []
+    },
+    {
+      "id": "charger_disconnected",
+      "category": "info",
+      "format": "----- Charger disconnected (elapsed=%lu ms, timeout=%u ms) — state: %d",
+      "regex": "^----- Charger disconnected \(elapsed=(\\d+) ms, timeout=(\\d+) ms\) .+ state: (\\d+)\\s*$",
+      "fields": ["elapsed_ms", "timeout_ms", "next_state"]
+    },
+    {
+      "id": "busbar_value",
+      "category": "debug",
+      "format": "BusBar : %d",
+      "regex": "^BusBar : (\\d+)\\s*$",
+      "fields": ["busbar_mA"]
+    },
+    {
+      "id": "module_error",
+      "category": "error",
+      "format": "ModuleError[%d] : %d",
+      "regex": "^ModuleError\[(\\d+)\] : (\\d+)\\s*$",
+      "fields": ["module_index", "error_code"]
+    },
+    {
+      "id": "cfg_capacity",
+      "category": "cfg",
+      "format": "[CFG] Battery capacity: %u Ah",
+      "regex": "^\[CFG\] Battery capacity: (\\d+) Ah\\s*$",
+      "fields": ["capacity_Ah"]
+    },
+    {
+      "id": "boot_rc_ccr",
+      "category": "boot",
+      "format": "[BOOT] RCC_CSR=0x%08lX",
+      "regex": "^\[BOOT\] RCC_CSR=0x([0-9A-Fa-f]{8})\\s*$",
+      "fields": ["rcc_csr_hex"]
+    },
+    {
+      "id": "watchdog_start",
+      "category": "boot",
+      "format": " - starting hardware watchdog (%ums)",
+      "regex": "^ - starting hardware watchdog \((\\d+)ms\)\\s*$",
+      "fields": ["wd_timeout_ms"]
+    },
+    {
+      "id": "watchdog_running",
+      "category": "boot",
+      "format": " - watchdog running: %d",
+      "regex": "^ - watchdog running: (\\d)\\s*$",
+      "fields": ["wd_running"]
+    },
+    {
+      "id": "boot_bq_init",
+      "category": "boot",
+      "format": "--- MCU Booting Up. Initializing BQ Hardware... ---",
+      "regex": ".*Initializing BQ Hardware\.\.\..*",
+      "fields": []
+    },
+    {
+      "id": "hello_world",
+      "category": "boot",
+      "format": " Hello World from main! ",
+      "regex": "^ Hello World from main! \\s*$",
+      "fields": []
+    },
+    {
+      "id": "threads_start",
+      "category": "boot",
+      "format": "--- All Systems Initialized. Starting Threads. ---",
+      "regex": ".*Starting Threads\. .*",
+      "fields": []
+    },
+    {
+      "id": "eeprom_reset_request",
+      "category": "eeprom",
+      "format": "[EEPROM] Reset request detected; holding...",
+      "regex": "^\[EEPROM\] Reset request detected; holding\.\.\.\\s*$",
+      "fields": []
+    },
+    {
+      "id": "eeprom_reset_confirmed",
+      "category": "eeprom",
+      "format": "[EEPROM] Reset confirmed; reloading defaults",
+      "regex": "^\[EEPROM\] Reset confirmed; reloading defaults\\s*$",
+      "fields": []
+    },
+    {
+      "id": "eeprom_reset_canceled",
+      "category": "eeprom",
+      "format": "[EEPROM] Reset canceled (PB10 released)",
+      "regex": "^\[EEPROM\] Reset canceled \(PB10 released\)\\s*$",
+      "fields": []
+    }
+  ],
+  "events": [
+    {
+      "id": "event_op_state",
+      "pattern": "OpState->%s",
+      "field": "op_state",
+      "values": ["INIT","CHARGING","PRE_CHARGE","LOAD_ENABLED","BATTERY_DEAD","POWER_DOWN","EXTERNAL","ERROR","ERROR_PRECHARGE","BALANCING","CHARGED","FORCEON"]
+    },
+    {
+      "id": "event_bms_state",
+      "pattern": "BMS->%s",
+      "field": "bms_state",
+      "values": ["IDLE","DISCHARGE","CHARGE"]
+    },
+    {
+      "id": "event_ov_state",
+      "pattern": "OV->%s",
+      "field": "ov_state",
+      "values": ["NORMAL","TRIPPED","RECOVERY"]
+    },
+    {
+      "id": "event_inv_state",
+      "pattern": "INV->%s",
+      "field": "inv_state",
+      "values": ["OK","FAULT"]
+    },
+    {
+      "id": "event_charger",
+      "pattern": "ChargerDetected->%s",
+      "field": "charger",
+      "values": ["ON","OFF"]
+    },
+    {
+      "id": "event_balance_window",
+      "pattern": "ChargeBalanceActive->%s",
+      "field": "balance_window",
+      "values": ["ON","OFF"]
+    },
+    {
+      "id": "event_soa_discharge",
+      "pattern": "SOA_D->%s",
+      "field": "soa_discharge",
+      "values": ["IN","OUT"]
+    },
+    {
+      "id": "event_soa_charge",
+      "pattern": "SOA_C->%s",
+      "field": "soa_charge",
+      "values": ["IN","OUT"]
+    },
+    {
+      "id": "event_powerdown_flag",
+      "pattern": "PowerdownFlag->%s",
+      "field": "powerdown_flag",
+      "values": ["SET","CLR"]
+    },
+    {
+      "id": "event_soc_save",
+      "pattern": "SOC_SaveReq->%s",
+      "field": "soc_save",
+      "values": ["SET","CLR"]
+    },
+    {
+      "id": "event_sd_err_cell",
+      "pattern": "SD_ERR_CELL:%u",
+      "field": "sd_err_cell_code"
+    },
+    {
+      "id": "event_sd_err_temp",
+      "pattern": "SD_ERR_TEMP:%u",
+      "field": "sd_err_temp_code"
+    },
+    {
+      "id": "event_sd_err_sys",
+      "pattern": "SD_ERR_SYS:%u",
+      "field": "sd_err_sys_code"
+    }
+  ],
+  "enums": {
+    "op_state": ["INIT","CHARGING","PRE_CHARGE","LOAD_ENABLED","BATTERY_DEAD","POWER_DOWN","EXTERNAL","ERROR","ERROR_PRECHARGE","BALANCING","CHARGED","FORCEON"],
+    "bms_state": ["IDLE","DISCHARGE","CHARGE"],
+    "ov_state": ["NORMAL","TRIPPED","RECOVERY"],
+    "inv_state": ["OK","FAULT"],
+    "on_off": ["ON","OFF"],
+    "in_out": ["IN","OUT"],
+    "set_clr": ["SET","CLR"]
+  }
+}
+

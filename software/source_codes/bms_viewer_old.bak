@@ -1,0 +1,2799 @@
+﻿# bms_viewer.py
+# Adds a tank-like battery SOC visual to the Dashboard (keeps all charts).
+# Install:
+#   python -m pip install pyserial websockets
+# Run:
+#   python bms_viewer.py --port COM3 --baud 250000 --http 8000 --ws 8765
+
+import argparse, threading, socket, time, queue, sys, signal, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from collections import deque
+import asyncio, serial, serial.tools.list_ports, websockets
+import re
+import warnings
+from urllib.parse import urlparse, parse_qs
+
+VERSION = "v36"
+BUILD_STAMP = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+# Silence benign SyntaxWarnings from backslashes inside embedded JS
+try:
+  warnings.filterwarnings("ignore", category=SyntaxWarning)
+except Exception:
+  pass
+
+HTML_VIEWER = """<!doctype html>
+<html><head>
+<meta charset="utf-8" />
+<title>BMS Live Logs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>">
+<meta name="x-bms-viewer-version" content="__VERSION__" />
+<style>
+  :root { --muted:#666; --bar:#f3f3f3; --line:#e6e6e6; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin:0; background:#fff; color:#111; }
+  header { padding:10px 14px; background:var(--bar); position:sticky; top:0; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  header .row { display:flex; align-items:center; gap:10px; flex:1 1 auto; min-width:240px; }
+  #status { font-size:14px; color:var(--muted); }
+  #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:12px; line-height:1.35; }
+  #bar { display:flex; gap:8px; padding:8px 12px; border-top:1px solid var(--line); position:sticky; bottom:0; background:#fff; }
+  input, button { font-size:16px; padding:8px 10px; }
+  #cmd { flex:1; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#e8e8e8; font-size:12px; }
+  .btn { border:1px solid var(--line); background:#fff; border-radius:10px; cursor:pointer; }
+  .btn:active { transform:translateY(1px); }
+  .muted { color: var(--muted); } a { color: inherit; }
+  select { font-size:16px; padding:6px 8px; }
+</style>
+</head><body>
+<header>
+  <div class="row"><strong>BMS Live Logs</strong><span class="chip">__VERSION__</span><span id="status" class="muted">(connecting...)</span><span class="chip" id="wsaddr"></span></div>
+  <div class="row" style="flex:0 0 auto; gap:8px;">
+    <span class="muted">Serial:</span>
+    <select id="comSel" title="Available COM ports" style="min-width:130px;"></select>
+    <select id="baudSel" title="Baud rate" style="min-width:120px;">
+      <option value="9600">9600</option>
+      <option value="57600">57600</option>
+      <option value="115200">115200</option>
+      <option value="230400">230400</option>
+      <option value="250000" selected>250000</option>
+      <option value="500000">500000</option>
+      <option value="921600">921600</option>
+    </select>
+    <button id="refreshCom" class="btn" title="Refresh COM list">Refresh</button>
+    <button id="connectCom" class="btn" title="Connect to selected port">Connect</button>
+    <span id="serStatus" class="chip" title="Serial status"></span>
+    <button id="toggleScroll" class="btn">Pause scroll</button>
+    <button id="clearCache" class="btn" title="Clear saved logs from this browser">Clear cache</button>
+    <a class="btn" href="/dash">Open dashboard -></a>
+    <a class="btn" href="/sd">Open SD Analyzer -></a>
+  </div>
+  <div id="err" style="background:#fee2e2; color:#7f1d1d; border:1px solid #fecaca; padding:6px 8px; margin:10px 14px; border-radius:8px; display:none;"></div>
+</header>
+<div id="log"></div>
+<div id="bar" __SENDBAR_STYLE__>
+  <input id="cmd" placeholder="Type command and press Enter..." autocomplete="off" />
+  <button id="send" class="btn">Send</button>
+</div>
+<script>
+(function(){
+  const err = document.getElementById('err');
+  function showErr(msg){ if(!err) return; err.textContent = "JS Error: " + msg; err.style.display = 'block'; }
+  window.addEventListener('error', e => showErr(e.message || String(e.error || e)));
+  window.addEventListener('unhandledrejection', e => showErr((e.reason && (e.reason.message||String(e.reason))) || 'Promise rejection'));
+})();
+  const logEl = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const cmdEl = document.getElementById('cmd');
+  const sendBtn = document.getElementById('send');
+  const toggleBtn = document.getElementById('toggleScroll');
+  const clearCacheBtn = document.getElementById('clearCache');
+
+  const wsUrl = "ws://" + location.hostname + ":__WS_PORT__";
+  document.getElementById('wsaddr').textContent = wsUrl;
+  const comSel = document.getElementById('comSel');
+  const baudSel = document.getElementById('baudSel');
+  const serStatus = document.getElementById('serStatus');
+  const refreshComBtn = document.getElementById('refreshCom');
+  const connectComBtn = document.getElementById('connectCom');
+
+  // Persist and restore logs so switching pages retains content
+  const LOG_STORE_KEY = 'bms_logs_text';
+  try {
+    const savedLog = localStorage.getItem(LOG_STORE_KEY);
+    if (savedLog) {
+      logEl.textContent = savedLog;
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+  } catch (e) {}
+  function persistLogs(){
+    try {
+      const MAX_KEEP = 300000; // ~300 KB
+      let text = logEl.textContent || '';
+      if (text.length > MAX_KEEP) text = text.slice(-MAX_KEEP);
+      localStorage.setItem(LOG_STORE_KEY, text);
+    } catch (e) {}
+  }
+
+  let ws; let autoScroll = (localStorage.getItem('logs_autoscroll') !== 'false');
+  function setAutoScroll(on){ autoScroll=!!on; localStorage.setItem('logs_autoscroll', String(autoScroll)); toggleBtn.textContent = autoScroll? "Pause scroll":"Resume scroll"; }
+  function nearBottom(th=40){ return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - th); }
+  window.addEventListener('scroll', ()=>{ if (!nearBottom() && autoScroll) setAutoScroll(false); });
+
+  function connect(){
+    ws = new WebSocket(wsUrl);
+    ws.onopen = ()=> statusEl.textContent="(connected)";
+    ws.onclose = ()=> { statusEl.textContent="(disconnected Ã¢â‚¬â€ retryingÃ¢â‚¬Â¦)"; setTimeout(connect, 1200); };
+    ws.onerror = ()=> { statusEl.textContent="(error Ã¢â‚¬â€ retryingÃ¢â‚¬Â¦)"; try{ws.close();}catch(e){} };
+    ws.onmessage = (ev)=>{
+      logEl.textContent += ev.data;
+      if (logEl.textContent.length > 2_000_000) logEl.textContent = logEl.textContent.slice(-1_000_000);
+      persistLogs();
+      if (autoScroll) window.scrollTo(0, document.body.scrollHeight);
+    };
+  }
+  // Show friendly initial status
+  try{ statusEl.textContent='(connecting...)'; }catch(e){}
+  // Attach a lightweight rate display using text length delta
+  (function(){
+    const headerRow = document.querySelector('header .row');
+    let rateEl = document.getElementById('rate');
+    if (!rateEl) { rateEl = document.createElement('span'); rateEl.className='chip'; rateEl.id='rate'; headerRow && headerRow.appendChild(rateEl); }
+    let lastLen = 0;
+    setInterval(()=>{
+      const len = (logEl.textContent||'').length;
+      const d = Math.max(0, len - lastLen);
+      lastLen = len;
+      if (rateEl) rateEl.textContent = d ? ('rate: ' + d + ' chars/s') : '';
+    }, 1000);
+  })();
+  connect();
+
+  // Serial helpers (list/status/switch)
+  function setSerStatus(text){ if(serStatus) serStatus.textContent = text||''; }
+  async function fetchStatus(){
+    try{
+      const r = await fetch('/api/serial/status');
+      if(!r.ok) throw new Error('status HTTP '+r.status);
+      const j = await r.json();
+      setSerStatus(j && j.is_open ? (j.port+" @ "+j.baud) : '(serial: not connected)');
+      if (j && j.baud && baudSel){
+        for (const o of baudSel.options){ if (Number(o.value)===Number(j.baud)) { o.selected=true; break; } }
+      }
+    }catch(e){ setSerStatus('(serial: unknown)'); }
+  }
+  async function fetchPorts(){
+    try{
+      const r = await fetch('/api/serial/ports');
+      if(!r.ok) throw new Error('ports HTTP '+r.status);
+      const j = await r.json();
+      const ports = (j && j.ports) || [];
+      if (comSel){
+        const prev = comSel.value;
+        comSel.innerHTML = '';
+        ports.forEach(p=>{ const opt=document.createElement('option'); opt.value=p.device; opt.textContent=p.device + (p.description? (' - '+p.description):''); comSel.appendChild(opt); });
+        if (prev) { for (const o of comSel.options){ if(o.value===prev){ o.selected=true; break; } } }
+      }
+    }catch(e){ /* ignore */ }
+  }
+  async function connectSerial(){
+    if (!comSel || !comSel.value) { setSerStatus('(pick a port)'); return; }
+    const port = encodeURIComponent(comSel.value);
+    const baud = encodeURIComponent(baudSel && baudSel.value ? baudSel.value : '250000');
+    try{
+      const r = await fetch('/api/serial/select?port='+port+'&baud='+baud, { method:'POST' });
+      if(!r.ok) throw new Error('select HTTP '+r.status);
+      await fetchStatus();
+    }catch(e){ setSerStatus('(serial: connect failed)'); }
+  }
+  if (refreshComBtn) refreshComBtn.addEventListener('click', ()=>{ fetchPorts(); fetchStatus(); });
+  if (connectComBtn) connectComBtn.addEventListener('click', ()=>{ connectSerial(); });
+  // initial
+  fetchPorts(); fetchStatus();
+
+  toggleBtn.addEventListener('click', ()=> setAutoScroll(!autoScroll));
+  if (clearCacheBtn) clearCacheBtn.addEventListener('click', ()=>{
+    try{ localStorage.removeItem(LOG_STORE_KEY); }catch(e){}
+    logEl.textContent='';
+    // Keep autoscroll enabled so new data appears immediately
+    try{ setAutoScroll(true); }catch(e){}
+    try{ window.scrollTo(0, document.body.scrollHeight); }catch(e){}
+  });
+  function send(){ const v = cmdEl ? cmdEl.value : ""; if (!v) return; try{ ws.send(v+"\\n"); }catch(e){} cmdEl.value=""; }
+  if (cmdEl) cmdEl.addEventListener('keydown', e=>{ if (e.key==="Enter") send(); });
+  if (sendBtn) sendBtn.addEventListener('click', send);
+</script>
+</body></html>"""
+
+DASHBOARD_HTML = """<!doctype html>
+<html><head>
+<meta charset="utf-8" />
+<title>BMS Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>">
+<meta name="x-bms-viewer-version" content="__VERSION__" />
+<style>
+  :root { --muted:#6b7280; --line:#e5e7eb; --bar:#f3f4f6; }
+  body.dark { --muted:#9ca3af; --line:#374151; --bar:#111827; background:#0b0f17; color:#e5e7eb; }
+  body.dark .col { background:#0f172a; border-color:#374151; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif; background:#fff; color:#111; }
+  header { position:sticky; top:0; z-index:10; background:var(--bar); border-bottom:1px solid var(--line); }
+  header .wrap { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:10px 14px; }
+  h1 { font-size:18px; margin:0; }
+  .muted { color:var(--muted); }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; font-size:12px; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; }
+  .badge { padding:3px 8px; border-radius:999px; background:#e5e7eb; font-size:12px; }
+  .row { display:flex; gap:12px; padding:12px; flex-wrap:wrap; }
+  .col { flex:1 1 380px; min-width:320px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .col h2 { margin:0 0 8px 0; font-size:16px; }
+  .charts { display:grid; grid-template-columns: minmax(260px,1fr); gap:12px; }
+  canvas { width:100%; height:260px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  .terminal { height:260px; overflow:auto; background:#0b1020; color:#e5e7eb; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:10px; border-radius:8px; border:1px solid #111827; }
+  .term-row { white-space:pre-wrap; line-height:1.35; }
+  .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button, input, select { font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  button { cursor:pointer; } button:active { transform: translateY(1px); }
+  a { color: inherit; text-decoration:none; }
+  .mini { font-size:12px; color: var(--muted); }
+  /* Battery SOC tank */
+  .socCard { display:flex; gap:12px; align-items:center; }
+  .tankWrap { width:120px; height:220px; position:relative; }
+  .tankWrap svg { width:100%; height:100%; display:block; }
+  .socInfo { display:flex; flex-direction:column; gap:6px; }
+  .socPct { font-size:28px; font-weight:700; }
+  .socLabel { font-size:12px; color: var(--muted); }
+  /* Panels and scrollers */
+  .box { border:1px solid var(--line); border-radius:10px; padding:10px; background:inherit; }
+  .box .mini { display:flex; align-items:center; gap:8px; margin:0 0 6px 0; }
+  .scroll160 { max-height:160px; overflow:auto; }
+  .scroll200 { max-height:200px; overflow:auto; }
+  .scroll300 { max-height:300px; overflow:auto; }
+  /* Balancing UI */
+  .balGrid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:8px; align-items:start; min-height:72px; }
+  .balCard { border:1px solid var(--line); border-radius:10px; padding:8px; background:inherit; min-height:72px; }
+  .balTitle { font-weight:600; margin-bottom:4px; }
+  .balChips { display:flex; flex-wrap:wrap; gap:6px; }
+  .balRow { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .balBar { position:relative; height:8px; border-radius:999px; background:var(--line); overflow:hidden; margin:4px 0 2px; }
+  .balBarFill { position:absolute; left:0; top:0; bottom:0; width:0%; background:linear-gradient(90deg,#60a5fa,#22c55e); }
+  /* Timeline controls */
+  .timeline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; }
+  .timeline label { display:flex; align-items:center; gap:6px; font-size:12px; }
+  .timeline input[type=range] { width:220px; }
+  .timeline select { padding:6px 8px; font-size:13px; border:1px solid var(--line); border-radius:8px; }
+</style>
+</head><body>
+<header>
+  <div class="wrap">
+    <div style="display:flex; gap:10px; align-items:center;">
+      <h1>BMS Dashboard</h1><span class="chip">__VERSION__</span>
+      <span id="status" class="muted">(disconnected)</span>
+      <span id="wsaddr" class="chip"></span>
+    </div>
+    <div class="controls" style="margin-left:auto;">
+      <input id="host" placeholder="Laptop IP (e.g. 192.168.1.23)" style="width:200px;" />
+      <input id="port" placeholder="WS Port" style="width:90px;" />
+      <button id="connect">Connect</button>
+      <button id="exportCsv">Export CSV</button>
+      <button id="savePng">Save PNGs</button>
+      <button id="themeToggle">Dark</button>
+      <button id="toggleScroll">Pause terminal</button>
+      <button id="clearUnknown">Clear terminal</button>
+      <button id="clearCache" title="Clear saved dashboard data in this browser">Clear cache</button>
+      <a class="chip" href="/" title="Back to logs"><- logs</a>
+      <a class="chip" href="/sd" title="Analyze SD card logs">sd analyzer -></a>
+    </div>
+  </div>
+</header>
+
+<div class="row">
+  <div class="col" style="flex:1 1 520px;">
+    <h2>Live Charts</h2>
+    <div class="mini">Sampling 1 Hz from latest parsed values; no internet required.</div>
+    <div class="charts">
+      <canvas id="voltCanvas"></canvas>
+      <canvas id="dvCanvas"></canvas>
+      <canvas id="currCanvas"></canvas>
+      <canvas id="socTempCanvas"></canvas>
+    </div>
+    <div class="mini" style="margin-top:6px;">
+      <label><input type="checkbox" id="chkVmax" checked /> Vmax</label>
+      <label><input type="checkbox" id="chkVmin" checked /> Vmin</label>
+      <label style="margin-left:10px;"><input type="checkbox" id="chkCurr" checked /> Current</label>
+      <label style="margin-left:10px;"><input type="checkbox" id="chkSOC" checked /> SOC</label>
+      <label><input type="checkbox" id="chkTemp" checked /> Temp</label>
+    </div>
+    <div class="timeline">
+      <label>Window
+        <select id="viewWindow">
+          <option value="100">100</option>
+          <option value="250" selected>250</option>
+          <option value="500">500</option>
+          <option value="750">750</option>
+          <option value="1000">1000</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label>Position
+        <input id="viewPos" type="range" min="0" max="0" step="1" value="0" disabled />
+      </label>
+      <button id="viewLatest">Latest</button>
+      <span id="viewPosLabel" class="mini"></span>
+    </div>
+  </div>
+
+  <div class="col" style="flex:1 1 320px;">
+    <h2>Battery</h2>
+    <div class="socCard">
+      <div class="tankWrap">
+        <svg id="socTank" viewBox="0 0 100 200" preserveAspectRatio="xMidYMid meet" aria-label="Battery SOC">
+          <!-- cap -->
+          <rect x="40" y="2" width="20" height="8" rx="2" fill="#555"/>
+          <!-- tank outline -->
+          <rect x="16" y="10" width="68" height="180" rx="12" ry="12" fill="none" stroke="#333" stroke-width="3"/>
+          <!-- inner area (clip) -->
+          <clipPath id="tankClip"><rect x="19" y="13" width="62" height="174" rx="9" ry="9"/></clipPath>
+          <!-- background grid + charging icon -->
+          <g clip-path="url(#tankClip)">
+            <rect x="19" y="13" width="62" height="174" fill="#f3f4f6"/>
+            <g stroke="#e5e7eb" stroke-width="1">
+              <line x1="19" y1="57" x2="81" y2="57"/><line x1="19" y1="101" x2="81" y2="101"/><line x1="19" y1="145" x2="81" y2="145"/>
+            </g>
+            <!-- fill -->
+            <rect id="tankFill" x="19" y="187" width="62" height="0" fill="#22c55e"/>
+            <!-- charging icon (hidden by default) -->
+            <g id="chargeIcon" style="display:none" transform="translate(50,60) scale(0.6) translate(-50,-70)">
+              <!-- refined lightning bolt, smaller and higher to avoid SOC text -->
+              <path d="M50 36 L44 62 H54 L48 94 L66 62 H56 L62 36 Z" fill="#111" opacity="0.95"/>
+            </g>
+          </g>
+          <!-- percent text -->
+          <text id="tankText" x="50" y="105" text-anchor="middle" font-size="26" font-weight="700" fill="#111">--%</text>
+        </svg>
+      </div>
+      <div class="socInfo">
+        <div class="socPct" id="socPct">--%</div>
+        <div class="socLabel" id="socLabel">State of Charge</div>
+        <div class="mini" id="lastSample"></div>
+      </div>
+    </div>
+
+    <div class="box" id="balBox" style="margin-top:10px;">
+      <div class="mini"><strong>Balancing</strong> <span id="balMeta" class="chip"></span></div>
+      <div id="balPacks" class="balGrid"></div>
+    </div>
+
+    <h2 style="margin-top:14px;">States & Events</h2>
+    <div class="badges" id="badges"></div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="mini"><strong>Registered Events</strong> <button id="clearReg" style="margin-left:6px; padding:2px 6px; font-size:11px;">Clear</button></div>
+      <ul id="regList" class="scroll160" style="margin:6px 0 0 18px; font-size:12px; padding-left:14px;"></ul>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="mini"><strong>Events History</strong>
+        <label style="margin-left:6px;"><input type="checkbox" id="histCritical" checked /> Critical only</label>
+        <button id="clearHist" style="margin-left:6px; padding:2px 6px; font-size:11px;">Clear</button>
+      </div>
+      <ul id="regHist" class="scroll200" style="margin:6px 0 0 18px; font-size:12px; padding-left:14px;"></ul>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="mini"><strong>States & Events Log</strong></div>
+      <ul id="events" class="scroll300" style="margin:6px 0 0 18px; padding-left:18px;"></ul>
+      <div id="alerts" class="mini" style="color:#b91c1c; margin-top:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col" style="flex:1 1 100%;">
+    <h2>Unidentified Messages (Terminal)</h2>
+    <div class="terminal" id="terminal"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ResizeObserver fallback
+  const RO = window.ResizeObserver || function(cb){ this.observe = function(){ window.addEventListener('resize', cb); cb(); }; };
+
+  class MiniPlot {
+    constructor(canvas, {series, y2Series=[], fixedLeft=null, fixedRight=null, showValuePanel=true, axisDecLeft=null, axisDecRight=null} = {}) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d');
+      this.series = series.map(s => ({label: s.label, color: s.color, data: []}));
+      this.y2Series = new Set(y2Series);
+      this.maxPoints = 300;
+      this.fixedLeft = fixedLeft;
+      this.fixedRight = fixedRight;
+      this.showValuePanel = showValuePanel;
+      this.axisDecLeft = axisDecLeft;
+      this.axisDecRight = axisDecRight;
+      this.hidden = new Set();
+      this.labels = [];
+      this.hoverIndex = null;
+      // Mouse interactions for hover tooltip
+      const onMove = (e)=>{
+        try {
+          const r = this.canvas.getBoundingClientRect();
+          const x = e.clientX - r.left; const y = e.clientY - r.top;
+          if (!this._plotW || this._plotW <= 0) return;
+          const inside = (x >= this._L && x <= this._L + this._plotW && y >= this._T && y <= this._T + this._plotH);
+          if (!inside){ if (this.hoverIndex != null){ this.hoverIndex = null; this.draw(); } return; }
+          let gi = Math.round(((x - this._L) / this._plotW) * (this.maxPoints - 1));
+          gi = Math.max(0, Math.min(this.maxPoints - 1, gi));
+          if (gi !== this.hoverIndex){ this.hoverIndex = gi; this.draw(); }
+        } catch(err) {}
+      };
+      const onLeave = ()=>{ if (this.hoverIndex != null){ this.hoverIndex = null; this.draw(); } };
+      this.canvas.addEventListener('mousemove', onMove);
+      this.canvas.addEventListener('mouseleave', onLeave);
+      this._resizeObserver = new RO(()=>this.resize());
+      this._resizeObserver.observe(canvas);
+      this.resize();
+    }
+    setHidden(index, hidden){ if(hidden) this.hidden.add(index); else this.hidden.delete(index); this.draw(); }
+    _fmtVal(v, label){
+      if (v==null || !isFinite(v)) return "--";
+      let dec=2;
+      if (/(\\(V\\))/.test(label)) dec=3;
+      if (/(\\(mV\\))/.test(label)) dec=0;
+      else if (/%/.test(label)) dec=1;
+      else if (/Â°C/.test(label)) dec=1;
+      return Number(v).toFixed(dec);
+    }
+    resize(){
+      const dpr = window.devicePixelRatio || 1;
+      const rect = this.canvas.getBoundingClientRect();
+      const cssW = Math.max(300, rect.width);
+      const cssH = Math.max(120, rect.height);
+      this.canvas.width = cssW * dpr;
+      this.canvas.height = cssH * dpr;
+      this.ctx.setTransform(dpr,0,0,dpr,0,0);
+      this._cssW = cssW; this._cssH = cssH;
+      this.draw();
+    }
+    push(values, label){
+      for (let i=0;i<values.length;i++){ this.series[i].data.push(values[i]); }
+      for (const s of this.series){ while(s.data.length>this.maxPoints) s.data.shift(); }
+      if (label !== undefined){ this.labels.push(label); while(this.labels.length>this.maxPoints) this.labels.shift(); }
+      this.draw();
+    }
+    _range(idxs){
+      let lo=Infinity, hi=-Infinity, any=false;
+      for (const i of idxs){
+        const s=this.series[i];
+        for(const v of s.data){ if(v==null || !isFinite(v)) continue; any=true; if(v<lo) lo=v; if(v>hi) hi=v; }
+      }
+      if(!any) return {lo:0, hi:1, any:false};
+      if(hi===lo){ hi+=1; lo-=1; }
+      const pad=(hi-lo)*0.1; return {lo: lo-pad, hi: hi+pad, any:true};
+    }
+    draw(){
+      const ctx=this.ctx, W=this._cssW, H=this._cssH;
+      ctx.clearRect(0,0,W,H);
+      const L=40, R=40, T=10, B=28;
+      const plotW=W-L-R, plotH=H-T-B;
+      this._L=L; this._R=R; this._T=T; this._B=B; this._plotW=plotW; this._plotH=plotH;
+      ctx.strokeStyle="#ddd"; ctx.lineWidth=1; ctx.strokeRect(L,T,plotW,plotH);
+      const leftIdx = this.series.map((_,i)=>i).filter(i=>!this.y2Series.has(i));
+      const rightIdx= this.series.map((_,i)=>i).filter(i=> this.y2Series.has(i));
+      const dataL = this._range(leftIdx);
+      const dataR = this._range(rightIdx.length?rightIdx:leftIdx);
+      let rL, rR;
+      if (this.fixedLeft){
+        rL = dataL.any ? { lo: Math.min(this.fixedLeft[0], dataL.lo), hi: Math.max(this.fixedLeft[1], dataL.hi) }
+                        : { lo: this.fixedLeft[0], hi: this.fixedLeft[1] };
+      } else rL = dataL;
+      if (this.fixedRight){
+        rR = dataR.any ? { lo: Math.min(this.fixedRight[0], dataR.lo), hi: Math.max(this.fixedRight[1], dataR.hi) }
+                        : { lo: this.fixedRight[0], hi: this.fixedRight[1] };
+      } else rR = dataR;
+      ctx.strokeStyle="#eee"; ctx.beginPath();
+      for (let g=1; g<=2; g++){ const y=T+plotH*g/3; ctx.moveTo(L,y); ctx.lineTo(L+plotW,y); } ctx.stroke();
+      ctx.fillStyle="#666"; ctx.font="12px system-ui, sans-serif";
+      const decL = (this.axisDecLeft ?? 2); const decR = (this.axisDecRight ?? 2);
+      ctx.fillText(rL.hi.toFixed(decL), 4, T+10); ctx.fillText(rL.lo.toFixed(decL), 4, T+plotH);
+      ctx.fillText(rR.hi.toFixed(decR), W-36, T+10); ctx.fillText(rR.lo.toFixed(decR), W-36, T+plotH);
+      const nData = Math.max(0, ...this.series.map(s=>s.data.length));
+      const n = Math.max(nData, this.labels.length);
+      const xAt = (idx)=> L + (idx/(this.maxPoints-1))*plotW;
+      const yAtL = (v)=> T + plotH * (1 - ((v - rL.lo)/(rL.hi - rL.lo)));
+      const yAtR = (v)=> T + plotH * (1 - ((v - rR.lo)/(rR.hi - rR.lo)));
+      for (let i=0;i<this.series.length;i++){
+        if (this.hidden.has(i)) continue;
+        const s=this.series[i];
+        ctx.lineWidth=2; ctx.strokeStyle=s.color; ctx.beginPath();
+        for (let idx=0; idx<s.data.length; idx++){
+          const v=s.data[idx]; if (v==null || !isFinite(v)) continue;
+          const x=xAt((n - s.data.length) + idx);
+          const y=(this.y2Series.has(i)? yAtR(v) : yAtL(v));
+          if (idx===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+        let lastVal=null;
+        for (let k=s.data.length-1; k>=0; k--){ const vv=s.data[k]; if (vv!=null && isFinite(vv)) { lastVal=vv; break; } }
+        if (lastVal!=null){
+          const y=(this.y2Series.has(i)? yAtR(lastVal) : yAtL(lastVal));
+          const yC=Math.max(T+8, Math.min(T+plotH-8, y));
+          ctx.beginPath(); ctx.fillStyle=s.color; ctx.arc(L+plotW-6, yC, 3, 0, Math.PI*2); ctx.fill();
+          const oldAlign=ctx.textAlign; ctx.textAlign="right";
+          ctx.fillStyle="#111"; ctx.font="12px system-ui, sans-serif";
+          ctx.fillText(this._fmtVal(lastVal, s.label), W-4, yC+4);
+          ctx.textAlign=oldAlign;
+        }
+        ctx.fillStyle=s.color; ctx.fillRect(L + i*120, H-16, 10,10);
+        ctx.fillStyle="#333"; ctx.fillText(s.label, L + i*120 + 14, H-7);
+      }
+      // X-axis time labels from this.labels
+      if (this.labels && this.labels.length){
+        try{
+          const ticks = 5;
+          ctx.fillStyle="#666"; const oldAlign=ctx.textAlign; ctx.textAlign='center'; ctx.font="11px system-ui, sans-serif";
+          for (let i=0;i<ticks;i++){
+            const gi = Math.round((n-1) * i/(ticks-1));
+            const li = Math.min(this.labels.length-1, Math.max(0, gi - (n - this.labels.length)));
+            const lbl = this.labels[li] ?? '';
+            const x = xAt(gi);
+            ctx.fillText(lbl, x, T+plotH+16);
+          }
+          ctx.textAlign=oldAlign;
+        }catch(e){}
+      }
+      // Hover crosshair + tooltip
+      if (this.hoverIndex != null && n > 0){
+        try{
+          const gi = this.hoverIndex;
+          const x = xAt(gi);
+          // crosshair line
+          ctx.strokeStyle = '#aaa'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, T+plotH); ctx.stroke();
+          // Collect values at this index
+          const rows = [];
+          const li = Math.min(this.labels.length-1, Math.max(0, gi - (n - this.labels.length)));
+          const timeLbl = this.labels[li] ?? '';
+          rows.push({label:'time', color:'#666', value: timeLbl});
+          // Helper to map global index to series local index
+          const valueAt = (s)=>{
+            const offset = n - s.data.length; const idx = gi - offset; if (idx >= 0 && idx < s.data.length) return s.data[idx]; return null;
+          };
+          for (let i=0;i<this.series.length;i++){
+            if (this.hidden.has(i)) continue; const s=this.series[i]; const v=valueAt(s);
+            rows.push({label:s.label, color:s.color, value: (v==null||!isFinite(v))? '--' : this._fmtVal(v, s.label)});
+            // draw point marker if value exists
+            if (v!=null && isFinite(v)){
+              const y=(this.y2Series.has(i)? yAtR(v) : yAtL(v));
+              ctx.beginPath(); ctx.fillStyle=s.color; ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill();
+            }
+          }
+          // Tooltip box size
+          ctx.font = '12px system-ui, sans-serif';
+          let maxW=0; rows.forEach(r=>{ const w = ctx.measureText(r.label + ': ' + r.value).width; if (w>maxW) maxW=w; });
+          const padX=8, padY=6, rowH=18; const boxW = maxW + padX*2; const boxH = padY*2 + rowH*rows.length;
+          let bx = L+6, by = T+6;
+          // If near left edge, keep default; if crosshair near left, move box to right edge
+          if (x - L < boxW + 12) { bx = L + 6; }
+          else { bx = x - boxW - 8; }
+          // Keep within plot area vertically
+          if (by + boxH > T + plotH) by = T + plotH - boxH - 6;
+          ctx.fillStyle='rgba(255,255,255,0.95)'; ctx.fillRect(bx,by,boxW,boxH);
+          ctx.strokeStyle='#ddd'; ctx.strokeRect(bx,by,boxW,boxH);
+          rows.forEach((r,idx)=>{
+            const y = by + padY + idx*rowH + 12;
+            ctx.fillStyle = (idx===0? '#111' : r.color);
+            ctx.fillText(r.label + ': ' + r.value, bx+padX, y);
+          });
+        }catch(e){}
+      }
+      if (this.showValuePanel !== false){
+        const entries=[];
+        for (let i=0;i<this.series.length;i++){
+          if (this.hidden.has(i)) continue;
+          const s=this.series[i];
+          let lastVal=null;
+          for (let k=s.data.length-1; k>=0; k--){ const vv=s.data[k]; if (vv!=null && isFinite(vv)) { lastVal=vv; break; } }
+          if (lastVal==null) continue;
+          entries.push({label:s.label, color:s.color, value:this._fmtVal(lastVal, s.label)});
+        }
+        if (entries.length){
+          ctx.font="12px system-ui, sans-serif";
+          let maxW=0; entries.forEach(e=>{ const w=ctx.measureText(e.label + ": " + e.value).width; if(w>maxW) maxW=w; });
+          const padX=8, padY=6, rowH=18, sw=10;
+          const boxW=maxW + sw + 10 + padX*2;
+          const boxH=padY*2 + rowH*entries.length;
+          const bx=L+plotW-boxW-6, by=T+6;
+          ctx.fillStyle="rgba(255,255,255,0.9)"; ctx.fillRect(bx,by,boxW,boxH);
+          ctx.strokeStyle="#ddd"; ctx.strokeRect(bx,by,boxW,boxH);
+          entries.forEach((e,idx)=>{
+            const y=by+padY+idx*rowH+12;
+            ctx.fillStyle=e.color; ctx.fillRect(bx+padX, y-8, 10,10);
+            ctx.fillStyle="#111"; ctx.fillText(e.label + ": " + e.value, bx+padX+10+6, y);
+          });
+        }
+      }
+    }
+  }
+
+  const hostInput = document.getElementById('host');
+  const portInput = document.getElementById('port');
+  const statusEl  = document.getElementById('status');
+  const wsaddrEl  = document.getElementById('wsaddr');
+  const connectBtn= document.getElementById('connect');
+
+  let ws;
+  let reconnectTimer = null;
+  const DEFAULT_WS_PORT = (function(){ const n = Number("__WS_PORT__"); return Number.isFinite(n) && n>0 ? n : 8765; })();
+  function defaultHost(){ const s = localStorage.getItem('bms_host'); return (s && s.trim()) || (location.hostname || ''); }
+  function defaultPort(){ const s = Number(localStorage.getItem('bms_ws_port')); return (Number.isFinite(s) && s>0) ? s : DEFAULT_WS_PORT; }
+  function updateAddrChip(h, p){ wsaddrEl.textContent = h && p ? ("ws://" + h + ":" + p) : ''; }
+
+  function connectWS(){
+    try {
+      const h = (hostInput.value || '').trim() || defaultHost();
+      const p = Number((portInput.value || '').trim() || defaultPort());
+      if(!h || !Number.isFinite(p) || p<=0){ statusEl.textContent='(set host/port)'; return; }
+      localStorage.setItem('bms_host', h); localStorage.setItem('bms_ws_port', String(p));
+      updateAddrChip(h, p);
+      statusEl.textContent='(connectingâ€¦)';
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer=null; }
+      try{ if (ws) ws.close(); }catch(e){}
+      ws = new WebSocket("ws://" + h + ":" + p);
+      ws.onopen  = function(){ statusEl.textContent='(connected)'; if (reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer=null; } };
+      ws.onclose = function(){ statusEl.textContent='(disconnected â€” retryingâ€¦)'; scheduleReconnect(); };
+      ws.onerror = function(){ statusEl.textContent='(error â€” retryingâ€¦)'; try{ws.close();}catch(e){} scheduleReconnect(); };
+      ws.onmessage = function(ev){ handleChunk(ev.data); };
+    } catch (e) { showErr("connectWS: " + (e && e.message ? e.message : String(e))); }
+  }
+  function scheduleReconnect(){ if (reconnectTimer) return; reconnectTimer = setTimeout(function(){ reconnectTimer=null; connectWS(); }, 1200); }
+
+  connectBtn.addEventListener('click', connectWS);
+
+  hostInput.value = defaultHost();
+  portInput.value = String(defaultPort());
+  updateAddrChip(hostInput.value, portInput.value);
+  
+  // Add age/rate chips and maintain them
+  (function(){
+    const controls = document.querySelector('header .controls');
+    if (controls){
+      let age = document.getElementById('age'); if (!age){ age=document.createElement('span'); age.id='age'; age.className='chip'; controls.appendChild(age); }
+      let rate = document.getElementById('rate'); if (!rate){ rate=document.createElement('span'); rate.id='rate'; rate.className='chip'; controls.appendChild(rate); }
+      let lastCount=0, count=0;
+      const _pushSample = pushSample;
+      window.pushSample = function(){ count++; return _pushSample.apply(this, arguments); };
+      setInterval(()=>{
+        if (typeof latest !== 'undefined' && latest && latest.updatedAt){
+          const ageSec = Math.max(0, (Date.now()-latest.updatedAt)/1000).toFixed(1);
+          age.textContent = 'age: '+ageSec+'s';
+        } else { age.textContent=''; }
+        const d = count - lastCount; lastCount=count; rate.textContent = d? ('rate: '+d+' samp/s') : '';
+      }, 1000);
+    }
+  })();
+
+  // Export buttons
+  (function(){
+    const btnCsv = document.getElementById('exportCsv');
+    const btnPng = document.getElementById('savePng');
+    const btnTheme = document.getElementById('themeToggle');
+    const btnClearCache = document.getElementById('clearCache');
+    if (btnCsv){
+      btnCsv.addEventListener('click', ()=>{
+        const rows = [['time','vmin','vmax','dV_mV','current_A','SOC_pct','temp_C']];
+        for (const s of samples){ rows.push([s.ts, s.vmin, s.vmax, s.dv_mV, s.curr, s.soc, s.temp]); }
+        const csv = rows.map(r=>r.map(x=>x==null? '': x).join(',')).join(' ');
+        const blob = new Blob([csv], {type:'text/csv'}); const url=URL.createObjectURL(blob);
+        const a=document.createElement('a'); a.href=url; a.download='bms_samples.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 2000);
+      });
+    }
+    if (btnPng){
+      btnPng.addEventListener('click', ()=>{
+        const canvases = [
+          {id:'voltCanvas', name:'volt.png'},
+          {id:'dvCanvas',   name:'dv.png'},
+          {id:'currCanvas', name:'curr.png'},
+          {id:'socTempCanvas', name:'soc_temp.png'}
+        ];
+        canvases.forEach(c=>{ const el=document.getElementById(c.id); if(!el) return; const url=el.toDataURL('image/png'); const a=document.createElement('a'); a.href=url; a.download=c.name; a.click(); });
+      });
+    }
+    if (btnTheme){
+      const apply = ()=>{ document.body.classList.toggle('dark', localStorage.getItem('theme')==='dark'); btnTheme.textContent = document.body.classList.contains('dark')? 'Light':'Dark'; };
+      apply();
+      btnTheme.addEventListener('click', ()=>{ const cur = localStorage.getItem('theme')==='dark'? 'light':'dark'; localStorage.setItem('theme', cur); apply(); });
+    }
+    if (btnClearCache){
+      const clearPlots = ()=>{
+        try{
+          [voltChart, dvChart, currChart, socTempChart].forEach(ch=>{
+            ch.series.forEach(s=>s.data=[]);
+            if (Array.isArray(ch.labels)) ch.labels = [];
+            ch.draw();
+          });
+        }catch(e){}
+      };
+      btnClearCache.addEventListener('click', ()=>{
+        try{
+          const keys = Object.values(STORE).concat(['bms_logs_text','vis_vmax','vis_vmin','vis_curr','vis_soc','vis_temp','dash_term_autoscroll']);
+          keys.forEach(k=> localStorage.removeItem(k));
+        }catch(e){}
+        // Clear UI
+        try{ eventsEl.innerHTML=''; termEl.innerHTML=''; badgeEl.innerHTML=''; if(regListEl) regListEl.innerHTML=''; if(regHistEl) regHistEl.innerHTML=''; }catch(e){}
+        try{ Object.keys(state).forEach(k=> state[k]=null); }catch(e){}
+        try{ latest.vmin=latest.vmax=latest.soc=latest.temp=latest.curr=null; latest.updatedAt=0; }catch(e){}
+        try{ samples.length=0; }catch(e){}
+        try{ lastSampleEl.textContent=''; }catch(e){}
+        try{ tankText.textContent='--%'; socPct.textContent='--%'; tankFill.setAttribute('y','187'); tankFill.setAttribute('height','0'); }catch(e){}
+        clearPlots();
+        try{ updateChargeIcon(); }catch(e){}
+        try{ reg.events={}; reg.hist=[]; saveReg(); }catch(e){}
+        try{ renderReg(); renderHist(); }catch(e){}
+        try{ bal.meta=null; bal.vpack={}; bal.packs={}; renderBalancing(); }catch(e){}
+        // small feedback
+        try{ btnClearCache.textContent='Cleared'; setTimeout(()=>btnClearCache.textContent='Clear cache', 1200); }catch(e){}
+      });
+    }
+  })();
+
+  const voltChart = new MiniPlot(document.getElementById('voltCanvas'), {
+    series: [{label:"Vmax (V)", color:"#dc2626"}, {label:"Vmin (V)", color:"#2563eb"}],
+    fixedLeft: [3.0, 3.65],
+    axisDecLeft: 3
+  });
+  const dvChart = new MiniPlot(document.getElementById('dvCanvas'), {
+    series: [{label:"dV (mV)", color:"#111827"}],
+    fixedLeft: [0, 50]
+  });
+  const currChart = new MiniPlot(document.getElementById('currCanvas'), {
+    series: [{label:"Current (A)", color:"#10b981"}],
+    fixedLeft: [-20, 20]
+  });
+  const socTempChart = new MiniPlot(document.getElementById('socTempCanvas'), {
+    series: [{label:"SOC (%)", color:"#7c3aed"}, {label:"Temp (Â°C)", color:"#f59e0b"}],
+    y2Series: [1],   // right axis
+    fixedLeft: [0, 100]
+  });
+
+  // Normalize labels in case of encoding issues
+  try { dvChart.series[0].label = 'dV (mV)'; dvChart.draw(); } catch(e){}
+  try { socTempChart.series[1].label = 'Temp (Â°C)'; socTempChart.draw(); } catch(e){}
+  
+  // Chart visibility toggles
+  (function(){
+    const $ = (id)=> document.getElementById(id);
+    const persist = (k,v)=> localStorage.setItem(k, v?'1':'0');
+    const load = (k, def)=> (localStorage.getItem(k) ?? (def?'1':'0')) === '1';
+    const bind = (chkId, chart, idx, key)=>{
+      const el = $(chkId); if (!el) return;
+      el.checked = load(key, true);
+      chart.setHidden(idx, !el.checked);
+      el.addEventListener('change', ()=>{ chart.setHidden(idx, !el.checked); persist(key, el.checked); });
+    };
+    bind('chkVmax', voltChart, 0, 'vis_vmax');
+    bind('chkVmin', voltChart, 1, 'vis_vmin');
+    bind('chkCurr', currChart, 0, 'vis_curr');
+    bind('chkSOC',  socTempChart, 0, 'vis_soc');
+    bind('chkTemp', socTempChart, 1, 'vis_temp');
+  })();
+
+  // === Battery Tank elements ===
+  const tankFill = document.getElementById('tankFill');
+  const tankText = document.getElementById('tankText');
+  const socPct   = document.getElementById('socPct');
+  const lastSampleEl = document.getElementById('lastSample');
+  const chargeIcon = document.getElementById('chargeIcon');
+
+  function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+  function socColor(p){
+    // Map 0..100 to red -> yellow -> green
+    const pct = clamp(p,0,100);
+    const h = (pct*1.2); // 0 -> 120
+    return "hsl(" + h + ", 69%, 45%)";
+  }
+  function updateTank(pct){
+    if (pct==null || !isFinite(pct)) return;
+    const p = clamp(pct,0,100);
+    // Inner tank rect: x=19,y=13,height=174
+    const maxH = 174;
+    const fillH = Math.round(maxH * (p/100));
+    const y = 13 + (maxH - fillH);
+    tankFill.setAttribute("y", String(y));
+    tankFill.setAttribute("height", String(fillH));
+    const c = socColor(p);
+    tankFill.setAttribute("fill", c);
+    tankText.textContent = Math.round(p) + "%";
+    socPct.textContent = Math.round(p) + "%";
+  }
+
+  function isCharging(){
+    try {
+      return (state && (
+        state.bms_state === 'CHARGE' ||
+        state.op_state === 'CHARGING' ||
+        state.charger === 'ON'
+      ));
+    } catch(e){ return false; }
+  }
+  function updateChargeIcon(){
+    if (!chargeIcon) return;
+    chargeIcon.style.display = isCharging() ? '' : 'none';
+  }
+
+  function pushSample(tsLabel, vmin, vmax, curr, soc, temp, dv_mV){
+    voltChart.push([vmax != null ? vmax : null, vmin != null ? vmin : null], tsLabel);
+    dvChart.push([dv_mV != null ? dv_mV : null], tsLabel);
+    currChart.push([curr != null ? curr : null], tsLabel);
+    socTempChart.push([soc != null ? soc : null, temp != null ? temp : null], tsLabel);
+    samples.push({ ts: tsLabel, vmin, vmax, curr, soc, temp, dv_mV });
+    if (samples.length > 1000) samples.shift();
+    try{ updateAlerts(); }catch(e){}
+    try{ saveSamples(); saveLatest(); }catch(e){}
+    try{ syncTimeline(true); }catch(e){}
+  }
+
+  const badgeEl = document.getElementById('badges');
+  const eventsEl= document.getElementById('events');
+  const regListEl = document.getElementById('regList');
+  const clearRegBtn = document.getElementById('clearReg');
+  const regHistEl = document.getElementById('regHist');
+  const clearHistBtn = document.getElementById('clearHist');
+  const histCritical = document.getElementById('histCritical');
+  const termEl  = document.getElementById('terminal');
+  const toggleBtn = document.getElementById('toggleScroll');
+  const clearBtn  = document.getElementById('clearUnknown');
+  const balMetaEl = document.getElementById('balMeta');
+  const balPacksEl = document.getElementById('balPacks');
+  const bal = { meta:null, vpack:{}, packs:{}, _curPack:null, _timer:null, _lastSig:"", _ts:0, _vpMinSeen:null, _vpMaxSeen:null };
+  let balHeaderEl = null;
+  (function ensureBalHeader(){
+    try{
+      const controls = document.querySelector('header .controls');
+      if (!controls) return;
+      // Balancing status chip in header (ON/OFF based on parsed terminal)
+      let balInd = document.getElementById('balInd');
+      if (!balInd){
+        balInd = document.createElement('span');
+        balInd.id = 'balInd';
+        balInd.className = 'chip';
+        balInd.textContent = 'bal: OFF';
+        controls.appendChild(balInd);
+      }
+      balHeaderEl = document.getElementById('balHeader');
+      if (!balHeaderEl){
+        balHeaderEl = document.createElement('div');
+        balHeaderEl.id = 'balHeader';
+        balHeaderEl.className = 'badges';
+        controls.appendChild(balHeaderEl);
+      }
+    }catch(e){}
+  })();
+  function updateBalIndicator(){
+    try{
+      const el = document.getElementById('balInd'); if (!el) return;
+      const now = Date.now();
+      const recent = !!(bal && bal._ts && (now - bal._ts <= 4000));
+      let count = 0;
+      try{
+        if (bal && bal.packs){
+          Object.values(bal.packs).forEach(pk=>{ if (pk && Array.isArray(pk.cells)) count += pk.cells.length; });
+        }
+      }catch(e){}
+      if (!count){ try{ if (bal && bal.meta && typeof bal.meta.above === 'number') count = bal.meta.above; }catch(e){} }
+      if (recent){ el.textContent = count ? ('bal: ON ('+count+')') : 'bal: ON'; }
+      else { el.textContent = 'bal: OFF'; }
+    }catch(e){}
+  }
+  function renderBalHeader(){
+    try{
+      if (!balHeaderEl) return;
+      const now = Date.now();
+      const stale = (bal._ts && (now - bal._ts > 5000));
+      const seen = new Set(Object.keys(bal.vpack||{}).map(n=>Number(n)));
+      Object.keys(bal.packs||{}).forEach(k=> seen.add(Number(k)));
+      const maxIdx = Math.max(3, ...(seen.size? Array.from(seen) : [0]));
+      balHeaderEl.innerHTML = '';
+      for (let i=0;i<=maxIdx;i++){
+        const mv = bal.vpack[i];
+        const span = document.createElement('span');
+        span.className = 'chip';
+        const vtxt = (typeof mv==='number')? (mv/1000).toFixed(3)+'V' : '--';
+        span.textContent = 'P'+i+': '+vtxt;
+        if (stale) span.style.opacity = '0.5';
+        balHeaderEl.appendChild(span);
+      }
+    }catch(e){}
+  }
+  function balScheduleRender(){ try{ if (bal._timer) clearTimeout(bal._timer); }catch(e){} bal._timer = setTimeout(renderBalancing, 150); }
+  // Map Vpack (mV) to gauge percent: 44V -> 0%, 57V -> 100% (linear)
+  function vpackGaugePct(mv){
+    try{
+      if (mv==null || !isFinite(mv)) return 0;
+      const v = mv/1000;
+      const v0 = 44, v1 = 57; // volts
+      if (v <= v0) return 0;
+      if (v >= v1) return 1;
+      return (v - v0) / (v1 - v0);
+    }catch(e){ return 0; }
+  }
+  function renderBalancing(){
+    try{
+      // meta chip
+      if (balMetaEl){
+        if (bal && bal.meta){
+          const m=bal.meta;
+          const vb = (m.vbat_mV!=null? (m.vbat_mV/1000).toFixed(3)+'V' : '--');
+          const tgt = (m.target_mV!=null? (m.target_mV/1000).toFixed(3)+'V' : '--');
+          const dv  = (m.dv_mV!=null? (m.dv_mV)+' mV' : '--');
+          const abv = (m.above!=null? m.above : '--');
+          balMetaEl.textContent = `dv=${dv} · Vbat=${vb} · target=${tgt} · above=${abv}`;
+        } else {
+          balMetaEl.textContent = '';
+        }
+      }
+      if (!balPacksEl) return;
+      // packs grid
+      const packs = new Set();
+      Object.keys(bal.vpack||{}).forEach(k=>packs.add(Number(k)));
+      Object.keys(bal.packs||{}).forEach(k=>packs.add(Number(k)));
+      const maxIdx = Math.max(3, ...(packs.size? Array.from(packs): [0]));
+      const idxs = Array.from({length:maxIdx+1}, (_,i)=>i);
+      // Change detection to avoid unnecessary DOM churn
+      const sig = JSON.stringify({meta:bal.meta, vpack:bal.vpack, packs:bal.packs});
+      if (sig === bal._lastSig) return; bal._lastSig = sig;
+      balPacksEl.innerHTML = '';
+      if (!idxs.length){
+        const p=document.createElement('div'); p.className='mini muted'; p.textContent='No balancing activity'; balPacksEl.appendChild(p);
+        return;
+      }
+      // Range is no longer used for gauge; we map absolute V->% via vpackGaugePct()
+      idxs.forEach(i=>{
+        const info = (bal.packs && bal.packs[i]) || {};
+        const vpack_mV = (info.vpack!=null? info.vpack : (bal.vpack? bal.vpack[i] : null));
+        const card = document.createElement('div'); card.className='balCard';
+        const title = document.createElement('div'); title.className='balTitle'; title.textContent='Pack ' + i; card.appendChild(title);
+        const row = document.createElement('div'); row.className='balRow';
+        const meta = document.createElement('div'); meta.className='mini'; meta.textContent = 'Vpack: ' + (vpack_mV!=null? (vpack_mV/1000).toFixed(3)+' V' : '--');
+        const count = document.createElement('div'); count.className='mini'; count.textContent = 'cells: ' + (Array.isArray(info.cells)? info.cells.length : 0);
+        row.appendChild(meta); row.appendChild(count); card.appendChild(row);
+        const bar = document.createElement('div'); bar.className='balBar'; bar.style.width = '100%';
+        const fill = document.createElement('div'); fill.className='balBarFill';
+        let pct = vpackGaugePct(vpack_mV);
+        fill.style.width = String(Math.round(pct*100)) + '%';
+        bar.appendChild(fill); card.appendChild(bar);
+        const chips = document.createElement('div'); chips.className='balChips';
+        const cells = (info.cells||[]);
+        if (cells.length){
+          cells.forEach(c=>{ const s=document.createElement('span'); s.className='badge'; s.textContent='C'+c.index+' '+(c.mv!=null? (c.mv/1000).toFixed(3)+' V' : ''); chips.appendChild(s); });
+        } else {
+          const s=document.createElement('span'); s.className='mini muted'; s.textContent='no cells'; chips.appendChild(s);
+        }
+        card.appendChild(chips);
+        balPacksEl.appendChild(card);
+      });
+      renderBalHeader();
+      updateBalIndicator();
+    }catch(e){}
+  }
+  // Keep indicator fresh w.r.t. stale timeout
+  setInterval(()=>{ try{ updateBalIndicator(); }catch(e){} }, 1000);
+  let termAutoScroll = (localStorage.getItem('dash_term_autoscroll') !== 'false');
+  toggleBtn.textContent = termAutoScroll?'Pause terminal':'Resume terminal';
+  toggleBtn.addEventListener('click', ()=>{ termAutoScroll=!termAutoScroll; localStorage.setItem('dash_term_autoscroll', String(termAutoScroll)); toggleBtn.textContent= termAutoScroll?'Pause terminal':'Resume terminal'; });
+  clearBtn.addEventListener('click', ()=>{ termEl.innerHTML=''; try{ localStorage.removeItem(STORE.term); }catch(e){} });
+  termEl.addEventListener('scroll', ()=>{ const near=(termEl.scrollTop + termEl.clientHeight) >= (termEl.scrollHeight - 30); if (!near && termAutoScroll) { termAutoScroll=false; toggleBtn.textContent='Resume terminal'; }});
+
+  const state = { op_state:null, bms_state:null, ov_state:null, inv_state:null, charger:null, balance_window:null, soa_discharge:null, soa_charge:null, powerdown_flag:null, soc_save:null };
+  function renderBadges(){
+    badgeEl.innerHTML='';
+    Object.entries(state).forEach(([k,v])=>{ if(v==null) return; const b=document.createElement('span'); b.className='badge'; b.textContent=`${k}:${v}`; badgeEl.appendChild(b); });
+    try{ saveState(); }catch(e){}
+    try{ updateChargeIcon(); }catch(e){}
+  }
+  function logEvent(txt){ const li=document.createElement('li'); li.textContent=`[${new Date().toLocaleTimeString()}] ${txt}`; eventsEl.appendChild(li); while(eventsEl.children.length>200) eventsEl.removeChild(eventsEl.firstChild); eventsEl.scrollTop = eventsEl.scrollHeight; try{ saveEvents(); }catch(e){} }
+  function termAppend(line){ const d=document.createElement('div'); d.className='term-row'; d.textContent=line; termEl.appendChild(d); while(termEl.children.length>2000) termEl.removeChild(termEl.firstChild); if (termAutoScroll) termEl.scrollTop = termEl.scrollHeight; try{ saveTerm(); }catch(e){} }
+
+  const latest = { vmin:null, vmax:null, soc:null, temp:null, curr:null, updatedAt:0 };
+  const samples = [];
+  // Registered events registry { name -> {count, last, at} } + chronological history
+  const reg = { events: {}, hist: [] };
+  // Persistence helpers to keep charts and terminal across page switches
+  const STORE = { samples:'bms_dash_samples', events:'bms_dash_events', term:'bms_dash_term', state:'bms_dash_state', latest:'bms_dash_latest', reg:'bms_dash_reg' };
+  function saveSamples(){ try{ localStorage.setItem(STORE.samples, JSON.stringify(samples.slice(-1000))); }catch(e){} }
+  function saveEvents(){ try{ const arr=Array.from(eventsEl.children).map(li=>li.textContent).slice(-200); localStorage.setItem(STORE.events, JSON.stringify(arr)); }catch(e){} }
+  function saveTerm(){ try{ const arr=Array.from(termEl.children).map(d=>d.textContent).slice(-1000); localStorage.setItem(STORE.term, JSON.stringify(arr)); }catch(e){} }
+  function saveState(){ try{ localStorage.setItem(STORE.state, JSON.stringify(state)); }catch(e){} }
+  function saveLatest(){ try{ localStorage.setItem(STORE.latest, JSON.stringify(latest)); }catch(e){} }
+  function saveReg(){
+    try{
+      // Trim history to keep storage modest
+      if (Array.isArray(reg.hist) && reg.hist.length > 400) reg.hist = reg.hist.slice(-400);
+      localStorage.setItem(STORE.reg, JSON.stringify(reg));
+    }catch(e){}
+  }
+  function renderReg(){
+    if (!regListEl) return;
+    regListEl.innerHTML = '';
+    const names = Object.keys(reg.events);
+    names.sort();
+    for (const name of names){
+      const e = reg.events[name];
+      const li = document.createElement('li');
+      const ts = e.at? (' @ ' + new Date(e.at).toLocaleTimeString()) : '';
+      const isProt = name.startsWith('prot:');
+      const disp = isProt ? ('PROT ' + name.slice(5)) : name;
+      li.textContent = disp + ' -> ' + (e.last ?? '--') + ' (' + (e.count||0) + ')' + ts;
+      if (isProt){
+        const up = String(e.last||'').toUpperCase();
+        if (['TRIPPED','OUT','FAULT','SET'].includes(up) || (typeof e.last==='number' && e.last!==0)){
+          li.style.color = '#b91c1c';
+        }
+      }
+      regListEl.appendChild(li);
+    }
+  }
+  function recordReg(name, val){
+    if (!name) return; const n = String(name);
+    if (!reg.events[n]) reg.events[n] = {count:0, last:null, at:0};
+    const e = reg.events[n];
+    const changed = String(e.last) !== String(val);
+    e.count = (e.count||0) + 1; e.last = (val==null? null: String(val)); e.at = Date.now();
+    if (changed) pushHist(n, e.last, false);
+    renderReg(); saveReg();
+  }
+  function recordProt(name, val, criticalVals){
+    // Only increment on interesting/critical transitions; always update last/at
+    const key = 'prot:' + String(name);
+    if (!reg.events[key]) reg.events[key] = {count:0, last:null, at:0};
+    const e = reg.events[key];
+    const prev = e.last;
+    let shouldCount = false;
+    if (Array.isArray(criticalVals)){
+      const up = String(val).toUpperCase();
+      shouldCount = criticalVals.includes(up);
+    } else if (typeof val === 'number'){
+      shouldCount = (val !== 0);
+    } else {
+      const up = String(val).toUpperCase();
+      // Count when leaving normal/ok/in state
+      shouldCount = (up && !['NORMAL','OK','IN','CLR','--'].includes(up));
+    }
+    const changed = String(prev) !== String(val);
+    if (shouldCount && changed) e.count = (e.count||0) + 1;
+    e.last = val;
+    e.at = Date.now();
+    if (changed) pushHist(key, val, !!shouldCount);
+    renderReg(); saveReg();
+  }
+  function pushHist(name, val, critical){
+    try{
+      if (!Array.isArray(reg.hist)) reg.hist = [];
+      reg.hist.push({ name, val, at: Date.now(), critical: !!critical });
+      if (reg.hist.length > 400) reg.hist = reg.hist.slice(-400);
+      renderHist(); saveReg();
+    }catch(e){}
+  }
+  function renderHist(){
+    if (!regHistEl) return;
+    regHistEl.innerHTML = '';
+    const critOnly = !!(histCritical && histCritical.checked);
+    const arr = Array.isArray(reg.hist)? reg.hist : [];
+    for (const it of arr){
+      if (critOnly && !it.critical) continue;
+      const li = document.createElement('li');
+      const t = new Date(it.at).toLocaleTimeString();
+      const disp = it.name.startsWith('prot:') ? ('PROT ' + it.name.slice(5)) : it.name;
+      li.textContent = '['+t+'] ' + disp + ' -> ' + it.val;
+      if (it.critical) li.style.color = '#b91c1c';
+      regHistEl.appendChild(li);
+    }
+  }
+  const KEYSETS = { vmin:["vmin","v_min","minv"], vmax:["vmax","v_max","maxv"], soc:["soc","stateofcharge"], temp:["temp","temperature"], curr:["current","i","iavg","ibatt"] };
+  const alertsEl = document.getElementById('alerts');
+  // Restore persisted dashboard state
+  ;(function restoreDashboard(){
+    try {
+      const rawS = localStorage.getItem(STORE.samples);
+      if (rawS){
+        const arr = JSON.parse(rawS);
+        if (Array.isArray(arr)){
+          for (const s of arr){
+            const ts = s && s.ts ? s.ts : '';
+            voltChart.push([s && s.vmax!=null? s.vmax : null, s && s.vmin!=null? s.vmin : null], ts);
+            dvChart.push([s && s.dv_mV!=null? s.dv_mV : null], ts);
+            currChart.push([s && s.curr!=null? s.curr : null], ts);
+            socTempChart.push([s && s.soc!=null? s.soc : null, s && s.temp!=null? s.temp : null], ts);
+            samples.push({ ts: s.ts, vmin: s.vmin, vmax: s.vmax, curr: s.curr, soc: s.soc, temp: s.temp, dv_mV: s.dv_mV });
+          }
+        }
+      }
+    } catch(e){}
+    try {
+      const rawR = localStorage.getItem(STORE.reg);
+      if (rawR){
+        const obj = JSON.parse(rawR);
+        if (obj){
+          if (obj.events) Object.assign(reg.events, obj.events);
+          if (Array.isArray(obj.hist)) reg.hist = obj.hist;
+          renderReg(); renderHist();
+        }
+      }
+    } catch(e){}
+    try {
+      const rawE = localStorage.getItem(STORE.events);
+      if (rawE){ const arr = JSON.parse(rawE); if (Array.isArray(arr)) { for (const t of arr){ const li=document.createElement('li'); li.textContent=t; eventsEl.appendChild(li); } } }
+    } catch(e){}
+    try {
+      const rawT = localStorage.getItem(STORE.term);
+      if (rawT){ const arr = JSON.parse(rawT); if (Array.isArray(arr)) { for (const t of arr){ const d=document.createElement('div'); d.className='term-row'; d.textContent=t; termEl.appendChild(d); } } }
+    } catch(e){}
+    try {
+      const rawSt = localStorage.getItem(STORE.state);
+      if (rawSt){ const st = JSON.parse(rawSt); if (st && typeof st==='object'){ Object.assign(state, st); renderBadges(); } }
+    } catch(e){}
+    try {
+      const rawL = localStorage.getItem(STORE.latest);
+      if (rawL){ const L = JSON.parse(rawL); if (L && typeof L==='object'){ Object.assign(latest, L); if (latest.soc!=null) updateTank(latest.soc); } }
+      // Also rebuild last sample text from last saved sample
+      const last = samples[samples.length-1];
+      if (last){
+        const dvv = (last.vmax!=null && last.vmin!=null)? (last.vmax - last.vmin) : null;
+        const dvv_mV = (dvv==null? null : dvv*1000);
+        lastSampleEl.textContent = "Last sample @ " + (last.ts || new Date().toLocaleTimeString()) +
+          " - Vmin=" + (last.vmin!=null? Number(last.vmin).toFixed(3):"--") + "V, " +
+          "Vmax=" + (last.vmax!=null? Number(last.vmax).toFixed(3):"--") + "V, " +
+          "dV=" + (dvv_mV!=null? Math.round(dvv_mV):"--") + " mV, " +
+          "I=" + (last.curr!=null? Math.round(last.curr*100)/100:"--") + "A, " +
+          "SOC=" + (last.soc!=null? Math.round(last.soc):"--") + "%, " +
+          "T=" + (last.temp!=null? Math.round(last.temp*10)/10:"--") + "degC";
+      }
+      try{ updateAlerts(); }catch(e){}
+      try{ renderReg(); renderHist(); }catch(e){}
+    } catch(e){}
+  })();
+  if (clearRegBtn){ clearRegBtn.addEventListener('click', ()=>{ try{ reg.events={}; saveReg(); renderReg(); }catch(e){} }); }
+  if (clearHistBtn){ clearHistBtn.addEventListener('click', ()=>{ try{ reg.hist=[]; saveReg(); renderHist(); }catch(e){} }); }
+  if (histCritical){ histCritical.addEventListener('change', ()=>{ try{ renderHist(); }catch(e){} }); }
+  function updateAlerts(){
+    if (!alertsEl) return;
+    const msgs = [];
+    const dv = (latest.vmax!=null && latest.vmin!=null) ? (latest.vmax - latest.vmin) : null;
+    const dv_mV = dv==null? null : Math.round(dv*1000);
+    if (dv_mV!=null && dv_mV>50) msgs.push('High dV: '+dv_mV+' mV');
+    if (latest.temp!=null && latest.temp>60) msgs.push('High temp: '+(Math.round(latest.temp*10)/10)+' Ã‚Â°C');
+    if (latest.curr!=null && Math.abs(latest.curr)>50) msgs.push('High current: '+(Math.round(latest.curr*100)/100)+' A');
+    if (latest.soc!=null && latest.soc<5) msgs.push('Low SOC: '+Math.round(latest.soc)+'%');
+    alertsEl.textContent = msgs.join(' Ã‚Â· ');
+  }
+  function parseNumberFrom(text, startIdx){ const sub=text.slice(startIdx); const m=sub.match(/[+\\-]?\\d+(?:\\.\\d+)?/); return m? parseFloat(m[0]) : null; }
+  function findKeyValue(line, keys){
+    const low=line.toLowerCase();
+    for (const k of keys){
+      let idx = low.indexOf(k);
+      while (idx !== -1){
+        let j = idx + k.length;
+        while (j < line.length && /\\s/.test(line[j])) j++;
+        if (j < line.length && (line[j] === ':' || line[j] === '=')) j++;
+        while (j < line.length && /\\s/.test(line[j])) j++;
+        const num = parseNumberFrom(line, j);
+        if (num !== null) return num;
+        idx = low.indexOf(k, idx + 1);
+      }
+    }
+    return null;
+  }
+  function convVolt(x){ return (x!=null && x>60)? x/1000 : x; }
+  function convSOC(x){ if (x==null) return null; if (x>100 && x<=1000) return x/10; if (x>1000) return x/100; return x; }
+  function convCurr(x){ if (x==null) return null; if (Math.abs(x)>=30 && !(/[0-9]\\./.test(String(x)))) return x/1000; return x; }
+  var lineBuf="";
+  function handleChunk(chunk){
+    if (typeof lineBuf !== 'string') { lineBuf = ''; }
+    lineBuf += String(chunk).replace(/\\r/g,'');
+    const parts = lineBuf.split('\\n');
+    lineBuf = parts.pop() ?? "";
+    for (const line of parts){ if (!processLine(line)){ if (line.trim()) termAppend(line); } }
+  }
+    function tryParseLegacyCsv(line){
+    try{
+      const t = String(line||'').trim();
+      if (!/^[0-9]+(?:\s*,\s*[0-9]+)+$/.test(t)) return false;
+      const parts = t.split(',').map(s=>s.trim());
+      if (parts.length < 8) return false;
+      const num = i => { const v = parseFloat(parts[i]); return Number.isFinite(v) ? v : null; };
+      const vmax_mV = num(4), vmin_mV = num(5), curr_mA = num(2), temp_dC = num(3);
+      if (vmin_mV != null) latest.vmin = vmin_mV/1000;
+      if (vmax_mV != null) latest.vmax = vmax_mV/1000;
+      if (curr_mA != null) latest.curr = curr_mA/1000;
+      if (temp_dC != null) latest.temp = temp_dC/10;
+      latest.updatedAt = Date.now();
+      return true;
+    } catch(e){ return false; }
+  }
+function processLine(line){
+    if (tryParseLegacyCsv(line)){
+      try {
+        const dvv = (latest.vmax!=null && latest.vmin!=null) ? (latest.vmax - latest.vmin) : null;
+        const dvv_mV = (dvv==null? null : dvv*1000);
+        if (typeof updateTank === 'function' && latest.soc!=null) updateTank(latest.soc);
+        lastSampleEl.textContent = "Last sample @ " + new Date().toLocaleTimeString() +
+          " - Vmin=" + (latest.vmin!=null? Number(latest.vmin).toFixed(3):"--") + "V, " +
+          "Vmax=" + (latest.vmax!=null? Number(latest.vmax).toFixed(3):"--") + "V, " +
+          "dV=" + (dvv_mV!=null? Math.round(dvv_mV):"--") + " mV, " +
+          "I=" + (latest.curr!=null? Math.round(latest.curr*100)/100:"--") + "A, " +
+          "SOC=" + (latest.soc!=null? Math.round(latest.soc):"--") + "%, " +
+          "T=" + (latest.temp!=null? Math.round(latest.temp*10)/10:"--") + "degC";
+      } catch(e){}
+      try{ saveLatest(); }catch(e){}
+      return true;
+    }
+
+    const vmin = findKeyValue(line, KEYSETS.vmin);
+    const vmax = findKeyValue(line, KEYSETS.vmax);
+    const soc  = findKeyValue(line, KEYSETS.soc);
+    const temp = findKeyValue(line, KEYSETS.temp);
+    const curr = findKeyValue(line, KEYSETS.curr);
+
+    let parsed=false;
+    if (vmin!=null){ latest.vmin=convVolt(vmin); parsed=true; }
+    if (vmax!=null){ latest.vmax=convVolt(vmax); parsed=true; }
+    if (soc!=null) { latest.soc =convSOC(soc);   parsed=true; }
+    if (temp!=null){
+      let t = temp;
+      if (t > 1200) t = t/1000; // milli-degC -> degC
+      if (t <= 120) { latest.temp = t; parsed=true; }
+    }
+    if (curr!=null){ latest.curr=convCurr(curr); parsed=true; }
+
+    if (parsed){
+      const dvv = (latest.vmax!=null && latest.vmin!=null) ? (latest.vmax - latest.vmin) : null;
+      const dvv_mV = (dvv==null? null : dvv*1000);
+      latest.updatedAt = Date.now();
+      // Update battery tank immediately on SOC
+      if (latest.soc!=null) updateTank(latest.soc);
+      try {
+        lastSampleEl.textContent = "Last sample @ " + new Date().toLocaleTimeString() +
+          " Ã¢â‚¬â€ Vmin=" + (latest.vmin!=null? Number(latest.vmin).toFixed(3):"Ã¢â‚¬â€") + "V, " +
+          "Vmax=" + (latest.vmax!=null? Number(latest.vmax).toFixed(3):"Ã¢â‚¬â€") + "V, " +
+          "ÃŽâ€V=" + (dvv_mV!=null? Math.round(dvv_mV):"Ã¢â‚¬â€") + " mV, " +
+          "I=" + (latest.curr!=null? Math.round(latest.curr*100)/100:"Ã¢â‚¬â€") + "A, " +
+          "SOC=" + (latest.soc!=null? Math.round(latest.soc):"Ã¢â‚¬â€") + "%, " +
+          "T=" + (latest.temp!=null? Math.round(latest.temp*10)/10:"Ã¢â‚¬â€") + "Ã‚Â°C";
+      }catch(e){}
+      try{ saveLatest(); }catch(e){}
+      return true;
+    }
+    if (tryParseState(line)) return true;
+    if (tryParseExtra(line)) return true;
+    return false;
+  }
+
+  setInterval(()=>{
+    const have = (latest.vmin!=null || latest.vmax!=null || latest.curr!=null || latest.soc!=null || latest.temp!=null);
+    if (!have) return;
+    const dv = (latest.vmax!=null && latest.vmin!=null) ? (latest.vmax - latest.vmin) : null;
+    const dv_mV = (dv==null? null : dv*1000);
+    pushSample(new Date().toLocaleTimeString(), latest.vmin, latest.vmax, latest.curr, latest.soc, latest.temp, dv_mV);
+  }, 1000);
+
+  // Timeline controls (windowed view for charts)
+  const charts = [voltChart, dvChart, currChart, socTempChart];
+  const timelineRange = document.getElementById('viewPos');
+  const timelineLabel = document.getElementById('viewPosLabel');
+  const timelineWindowSel = document.getElementById('viewWindow');
+  const timelineLatestBtn = document.getElementById('viewLatest');
+  let windowMode = 'fixed';
+  let windowSizeValue = 250;
+  let activeWindowSize = 250;
+  let viewStartIdx = 0;
+  let followLatest = true;
+  function computeWindowSize(total){ return windowMode==='all'? Math.max(1,total) : windowSizeValue; }
+  function applyChartView(){
+    const total = samples.length;
+    const start = Math.max(0, Math.min(viewStartIdx, Math.max(0, total - activeWindowSize)));
+    const end = Math.min(total, start + activeWindowSize);
+    const labels = [];
+    const vmaxs = [], vmins = [], dvs = [], curs = [], socs = [], temps = [];
+    for (let i=start; i<end; i++){
+      const s = samples[i];
+      labels.push(s.ts);
+      vmaxs.push(s.vmax!=null? s.vmax : null);
+      vmins.push(s.vmin!=null? s.vmin : null);
+      dvs.push(s.dv_mV!=null? s.dv_mV : null);
+      curs.push(s.curr!=null? s.curr : null);
+      socs.push(s.soc!=null? s.soc : null);
+      temps.push(s.temp!=null? s.temp : null);
+    }
+    // Apply data to charts
+    voltChart.series[0].data = vmaxs; voltChart.series[1].data = vmins; voltChart.labels = labels; voltChart.draw();
+    dvChart.series[0].data = dvs; dvChart.labels = labels; dvChart.draw();
+    currChart.series[0].data = curs; currChart.labels = labels; currChart.draw();
+    socTempChart.series[0].data = socs; socTempChart.series[1].data = temps; socTempChart.labels = labels; socTempChart.draw();
+  }
+  function updateTimelineLabel(total){ if(!timelineLabel) return; if(!total){ timelineLabel.textContent='no samples'; return; } const end=Math.min(total, viewStartIdx+activeWindowSize); timelineLabel.textContent=`samples ${viewStartIdx+1}-${end} of ${total}`; }
+  function syncTimeline(forceFollow){ const total=samples.length; activeWindowSize=computeWindowSize(total); if(!Number.isFinite(activeWindowSize) || activeWindowSize<1) activeWindowSize=1; const maxStart=Math.max(0, total - activeWindowSize); if(forceFollow) followLatest=true; if(followLatest){ viewStartIdx=maxStart; } else if (viewStartIdx>maxStart){ viewStartIdx=maxStart; } applyChartView(); if(timelineRange){ timelineRange.max=String(maxStart); timelineRange.value=String(viewStartIdx); timelineRange.disabled=maxStart===0; } updateTimelineLabel(total); }
+  if(timelineRange){ timelineRange.addEventListener('input', ()=>{ const total=samples.length; activeWindowSize=computeWindowSize(total); if(!Number.isFinite(activeWindowSize) || activeWindowSize<1) activeWindowSize=1; const maxStart=Math.max(0, total - activeWindowSize); let value=Number(timelineRange.value); if(!Number.isFinite(value)) value=0; value=Math.max(0, Math.min(maxStart, value)); viewStartIdx=value; followLatest=(value===maxStart); applyChartView(); updateTimelineLabel(total); }); }
+  if(timelineWindowSel){ timelineWindowSel.addEventListener('change', ()=>{ const val=timelineWindowSel.value; if(val==='all'){ windowMode='all'; } else { windowMode='fixed'; const num=parseInt(val,10); if(Number.isFinite(num) && num>0) windowSizeValue=Math.max(10,num); } followLatest=true; syncTimeline(true); }); }
+  if(timelineLatestBtn){ timelineLatestBtn.addEventListener('click', ()=>{ followLatest=true; syncTimeline(true); }); }
+  // Initialize timeline to latest
+  syncTimeline(true);
+
+  const RE_OP_STATE = /^-{5}\\s*OP_STATE_([A-Z_]+):\\s*bmsState:\\s*([A-Z]+)/;
+  const RE_EVENT_PREFIXES = [
+    {re:/^OpState->(INIT|CHARGING|PRE_CHARGE|LOAD_ENABLED|BATTERY_DEAD|POWER_DOWN|EXTERNAL|ERROR|ERROR_PRECHARGE|BALANCING|CHARGED|FORCEON)$/, field:"op_state"},
+    {re:/^BMS->(IDLE|DISCHARGE|CHARGE)$/, field:"bms_state"},
+    {re:/^OV->(NORMAL|TRIPPED|RECOVERY)$/, field:"ov_state"},
+    {re:/^UV->(NORMAL|TRIPPED|RECOVERY)$/, field:"uv_state"},
+    {re:/^OT->(NORMAL|TRIPPED|RECOVERY)$/, field:"ot_state"},
+    {re:/^UT->(NORMAL|TRIPPED|RECOVERY)$/, field:"ut_state"},
+    {re:/^OC->(NORMAL|TRIPPED|RECOVERY)$/, field:"oc_state"},
+    {re:/^SC->(NORMAL|TRIPPED|RECOVERY)$/, field:"sc_state"},
+    {re:/^INV->(OK|FAULT)$/, field:"inv_state"},
+    {re:/^ChargerDetected->(ON|OFF)$/, field:"charger"},
+    {re:/^ChargeBalanceActive->(ON|OFF)$/, field:"balance_window"},
+    {re:/^SOA_D->(IN|OUT)$/, field:"soa_discharge"},
+    {re:/^SOA_C->(IN|OUT)$/, field:"soa_charge"},
+    {re:/^PowerdownFlag->(SET|CLR)$/, field:"powerdown_flag"},
+    {re:/^SOC_SaveReq->(SET|CLR)$/, field:"soc_save"},
+    {re:/^SD_ERR_CELL:(\\d+)$/, field:"sd_err_cell_code"},
+    {re:/^SD_ERR_TEMP:(\\d+)$/, field:"sd_err_temp_code"},
+    {re:/^SD_ERR_SYS:(\\d+)$/, field:"sd_err_sys_code"},
+  ];
+  function tryParseExtra(line){
+    // dV lock messages from firmware
+    {
+      const mm = /^\[DV-LOCK\].*?clamp 0A/i.exec(line);
+      if (mm){ recordProt('DV_LOCK', 'SET', ['SET']); logEvent('DV_LOCK -> SET'); renderBadges(); return true; }
+    }
+    {
+      const mm = /^\[DV-LOCK\].*?cleared.*?restore/i.exec(line);
+      if (mm){ recordProt('DV_LOCK', 'CLR', ['SET']); logEvent('DV_LOCK -> CLR'); renderBadges(); return true; }
+    }
+    // OVP helper messages (soft clamp and hard cut)
+    {
+      const mm = /^\[OVP\].*?disconnect\s+inverter/i.exec(line);
+      if (mm){ recordProt('OVP_HARD', 'TRIPPED', ['TRIPPED']); logEvent('OVP_HARD -> TRIPPED (disconnect inverter)'); renderBadges(); return true; }
+    }
+    {
+      const mm = /^\[OVP\].*?(?:>=\s*3650|3\.65|3650)\s*m?V.*?(?:0A|command\s+0A)/i.exec(line);
+      if (mm){ recordProt('OVP_SOFT', 'SET', ['SET']); logEvent('OVP_SOFT -> SET (0A clamp)'); renderBadges(); return true; }
+    }
+    {
+      const mm = /^\[OVP\].*?restore.*?(?:trickle|\b2\s*A\b)/i.exec(line);
+      if (mm){ recordProt('OVP_SOFT', 'CLR', ['SET']); logEvent('OVP_SOFT -> CLR (restore trickle)'); renderBadges(); return true; }
+    }
+    // SOC full-charge detection
+    {
+      const mm = /^\[SOC\]\s*Full-charge detected.*?SOC=100%/i.exec(line);
+      if (mm){ recordProt('SOC_FULL', 'SET', ['SET']); recordReg('soc_full', 'SET'); logEvent('SOC_FULL -> SET'); try{ latest.soc = 100; updateTank(100); }catch(e){} renderBadges(); return true; }
+    }
+    // Contactors: CNT: CHG=ON PRE=ON MAIN=OFF
+    {
+      const mm = /^CNT:\s*CHG=(ON|OFF)\s+PRE=(ON|OFF)\s+MAIN=(ON|OFF)\s*$/.exec(line);
+      if (mm){ state.cnt_chg=mm[1]; state.cnt_pre=mm[2]; state.cnt_main=mm[3]; recordReg('contactors', `${mm[1]}/${mm[2]}/${mm[3]}`); logEvent(`contactors CHG:${mm[1]} PRE:${mm[2]} MAIN:${mm[3]}`); renderBadges(); return true; }
+    }
+    // Precharge: PRECHARGE: 80% (Vbus=..V target=..V)
+    {
+      const mm = /^PRECHARGE:\s*(\d+)%.*?Vbus=([\d.]+)V.*?target=([\d.]+)V/.exec(line);
+      if (mm){ state.precharge_pct=mm[1]; state.vbus=parseFloat(mm[2]); state.vtarget=parseFloat(mm[3]); recordReg('precharge', `${mm[1]}%`); logEvent(`precharge ${mm[1]}% (Vbus=${mm[2]}V target=${mm[3]}V)`); renderBadges(); return true; }
+    }
+    // Isolation: ISO: R=1.23MOhm (OK|WARN|FAULT)
+    {
+      const mm = /^ISO:\s*R=([\d.]+)M(?:Ohm|ÃŽÂ©)\s*\((OK|WARN|FAULT)\)/.exec(line);
+      if (mm){ state.iso_R_MOhm=parseFloat(mm[1]); state.iso_state=mm[2]; recordReg('isolation', `${mm[1]}MO ${mm[2]}`); recordProt('ISO', mm[2], ['FAULT']); logEvent(`isolation R=${mm[1]}MÃŽÂ© ${mm[2]}`); renderBadges(); return true; }
+    }
+    // Pack metrics: PACK: V=..V I=..A P=..kW
+    {
+      const mm = /^PACK:\s*V=([\d.]+)V\s+I=([+\-]?[\d.]+)A\s+P=([\d.]+)kW/.exec(line);
+      if (mm){ state.pack_v=parseFloat(mm[1]); state.pack_i=parseFloat(mm[2]); state.pack_p_kW=parseFloat(mm[3]); recordReg('pack', `V=${mm[1]} I=${mm[2]} P=${mm[3]}kW`); logEvent(`pack V=${mm[1]}V I=${mm[2]}A P=${mm[3]}kW`); renderBadges(); return true; }
+    }
+    // Cell extremes: CELL: vmin=x.x ... vmax=y.y
+    {
+      const mm = /CELL:\s*vmin=([\d.]+).*?vmax=([\d.]+)/.exec(line);
+      if (mm){ latest.vmin = convVolt(parseFloat(mm[1])); latest.vmax = convVolt(parseFloat(mm[2])); latest.updatedAt=Date.now(); return true; }
+    }
+    // Temperature bands: T: min=.. max=.. avg=..
+    {
+      const mm = /T:\s*min=([+\-]?[\d.]+).*?max=([+\-]?[\d.]+).*?avg=([+\-]?[\d.]+)/.exec(line);
+      if (mm){ state.temp_min=parseFloat(mm[1]); state.temp_max=parseFloat(mm[2]); latest.temp=parseFloat(mm[3]); latest.updatedAt=Date.now(); renderBadges(); return true; }
+    }
+    // Balancing list
+    {
+      const mm = /^BAL:\s*active=\[(.*?)\]/.exec(line);
+      if (mm){ const arr = mm[1].split(',').map(s=>s.trim()).filter(Boolean); state.balance_active=arr.length; recordReg('balancing', `${arr.length} cells`); logEvent(`balancing active cells: ${arr.length}`); renderBadges(); return true; }
+    }
+    // Fault counters
+    {
+      const mm = /^FAULTS:\s*(.+)$/.exec(line);
+      if (mm){ state.faults=mm[1].trim(); recordReg('faults', state.faults); recordProt('FAULTS', state.faults); logEvent('faults '+state.faults); renderBadges(); return true; }
+    }
+    // Inverter telemetry
+    {
+      const mm = /^INV:\s*rpm=([\d.]+)\s+torque=([\d.]+)\s+power=([\d.]+)/.exec(line);
+      if (mm){ state.inv_rpm=parseFloat(mm[1]); state.inv_torque=parseFloat(mm[2]); state.inv_power=parseFloat(mm[3]); recordReg('inverter', `rpm=${mm[1]} tq=${mm[2]} p=${mm[3]}`); logEvent(`inverter rpm=${mm[1]} tq=${mm[2]} p=${mm[3]}`); renderBadges(); return true; }
+    }
+    // Balancing meta: [BAL-SEL] dv=278 mV Vbat=213596 mV Target=3432 mV Above=2
+    {
+      const mm = /^\[BAL-SEL\]\s*dv=(\d+)\s*mV\s*Vbat=(\d+)\s*mV\s*Target=(\d+)\s*mV\s*Above=(\d+)/i.exec(line);
+      if (mm){
+        bal.meta = { dv_mV: Number(mm[1]), vbat_mV: Number(mm[2]), target_mV: Number(mm[3]), above: Number(mm[4]) };
+        bal._ts = Date.now();
+        // start a fresh selection set
+        bal.packs = {}; bal._curPack = null;
+        recordReg('balancing', `dv=${mm[1]}mV above=${mm[4]}`);
+        logEvent(`balancing select dv=${mm[1]}mV target=${mm[3]}mV above=${mm[4]}`);
+        balScheduleRender(); return true;
+      }
+    }
+    // Balancing vpack header
+    { if (/^\[BAL-VPACK\]/i.test(line)){ /* marker only; next P# lines carry data */ return true; } }
+    // Vpack lines: accept flexible formats, possibly multiple per line
+    // Examples: "P0=53660", "P1 = 53314", "P2: 53320 mV"
+    {
+      const re = /P\s*(\d+)\s*[=:]\s*(\d+)\s*(?:mV)?/gi;
+      let any=false, m;
+      while ((m = re.exec(line))){
+        const i=Number(m[1]); const v=Number(m[2]);
+        if(!bal.vpack) bal.vpack={};
+        bal.vpack[i]=v; any=true;
+      }
+      if (any){ bal._ts = Date.now(); balScheduleRender(); return true; }
+    }
+    // Pack selection header: [BAL-SEL] Pack 2 Vpack=53317 mV (1):
+    {
+      const mm = /^\[BAL-SEL\]\s*Pack\s+(\d+)\s+Vpack=(\d+)\s*mV\s*\((\d+)\):/i.exec(line);
+      if (mm){ const i=Number(mm[1]); const vp=Number(mm[2]); const cnt=Number(mm[3]); if(!bal.packs) bal.packs={}; bal.packs[i]={vpack:vp,count:cnt,cells:[]}; bal._curPack=i; bal._ts = Date.now(); balScheduleRender(); return true; }
+    }
+    // Cell lines: C12=3448
+    {
+      const mm = /^\s*C(\d+)=(\d+)/i.exec(line);
+      if (mm && bal._curPack!=null){ const pk=bal._curPack; const cell={index:Number(mm[1]), mv:Number(mm[2])}; if(!bal.packs[pk]) bal.packs[pk]={vpack:null,count:null,cells:[]}; bal.packs[pk].cells.push(cell); bal._ts = Date.now(); balScheduleRender(); return true; }
+    }
+    return false;
+  }
+  function tryParseState(line){
+    const m = RE_OP_STATE.exec(line);
+    if (m) { state.op_state=m[1]; state.bms_state=m[2]; recordReg('op_state', m[1]); recordReg('bms_state', m[2]); logEvent("OP_STATE Ã¢â€ â€™ " + m[1] + " (bmsState=" + m[2] + ")"); renderBadges(); return true; }
+    for (const e of RE_EVENT_PREFIXES){
+      const mm=e.re.exec(line.trim());
+      if(mm){
+        const val = mm[1];
+        state[e.field]=val;
+        recordReg(e.field, val);
+        // Protection counters
+        switch(e.field){
+          case 'ov_state': recordProt('OV', val, ['TRIPPED','RECOVERY']); break;
+          case 'uv_state': recordProt('UV', val, ['TRIPPED','RECOVERY']); break;
+          case 'ot_state': recordProt('OT', val, ['TRIPPED','RECOVERY']); break;
+          case 'ut_state': recordProt('UT', val, ['TRIPPED','RECOVERY']); break;
+          case 'oc_state': recordProt('OC', val, ['TRIPPED','RECOVERY']); break;
+          case 'sc_state': recordProt('SC', val, ['TRIPPED','RECOVERY']); break;
+          case 'inv_state': recordProt('INV', val, ['FAULT']); break;
+          case 'soa_discharge': recordProt('SOA_D', val, ['OUT']); break;
+          case 'soa_charge': recordProt('SOA_C', val, ['OUT']); break;
+          case 'powerdown_flag': recordProt('PDN', val, ['SET']); break;
+          default:
+            if (e.field === 'sd_err_cell_code' || e.field === 'sd_err_temp_code' || e.field === 'sd_err_sys_code'){
+              const num = Number(val);
+              const name = e.field.replace('_code','').toUpperCase();
+              recordProt(name, Number.isFinite(num)? num : 0);
+            }
+        }
+        logEvent(e.field + " Ã¢â€ â€™ " + val);
+        renderBadges();
+        return true;
+      }
+    }
+    return false;
+  }
+  // All handlers ready; now connect to WS
+  connectWS();
+  })();</script>
+</body></html>"""
+
+SD_ANALYZER_HTML = """<!doctype html>
+<html><head>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>">
+<meta charset=\"utf-8\" />
+<title>BMS SD Analyzer</title>
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+<meta name=\"x-bms-viewer-version\" content=\"__VERSION__\" />
+<style>
+  :root { --muted:#6b7280; --line:#e5e7eb; --bar:#f3f4f6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#fff; color:#111; }
+  header { position:sticky; top:0; z-index:10; background:var(--bar); border-bottom:1px solid var(--line); }
+  header .wrap { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:10px 14px; }
+  h1 { font-size:18px; margin:0; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; font-size:12px; }
+  .muted { color:var(--muted); }
+  .row { display:flex; gap:12px; padding:12px; flex-wrap:wrap; }
+  .col { flex:1 1 380px; min-width:320px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .col h2 { margin:0 0 8px 0; font-size:16px; }
+  .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button, input { font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  button { cursor:pointer; } button:active { transform: translateY(1px); }
+  .drop { border:2px dashed #cbd5e1; border-radius:12px; padding:14px; text-align:center; color:#64748b; }
+  .drop.drag { background:#f1f5f9; }
+  .grid { display:grid; grid-template-columns: minmax(260px,1fr); gap:12px; }
+  canvas { width:100%; height:240px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  .mini { font-size:12px; color:var(--muted); }
+  .terminal { height:260px; overflow:auto; background:#0b1020; color:#e5e7eb; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:10px; border-radius:8px; border:1px solid #111827; }
+  .term-row { white-space:pre-wrap; line-height:1.35; }
+  ul { margin:6px 0 0 18px; padding-left:14px; }
+  .badge { padding:3px 8px; border-radius:999px; background:#e5e7eb; font-size:12px; margin-right:6px; display:inline-block; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; }
+  .scroll200 { max-height:200px; overflow:auto; }
+  .stat { display:flex; justify-content:space-between; gap:12px; border-bottom:1px dashed #e5e7eb; padding:4px 0; }
+  .stat:last-child { border-bottom:0; }
+  a { color: inherit; text-decoration:none; }
+  .links { display:flex; gap:8px; align-items:center; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#e5e7eb; font-size:12px; }
+  .warn { color:#b91c1c; }
+  .ok { color:#15803d; }
+  .box { border:1px solid var(--line); border-radius:10px; padding:10px; background:#fff; }
+  .box .mini { margin:0 0 6px 0; }
+  .btn-sm { padding:4px 8px; font-size:12px; }
+  .timeline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; }
+  .timeline label { display:flex; align-items:center; gap:6px; font-size:12px; }
+  .timeline input[type=range] { width:220px; }
+  .timeline select { padding:6px 8px; font-size:13px; border:1px solid var(--line); border-radius:8px; }
+  .right { margin-left:auto; }
+  .nowrap { white-space:nowrap; }
+  .labels { display:flex; gap:6px; flex-wrap:wrap; }
+  .labels > span { font-size:12px; color:#334155; background:#e2e8f0; padding:2px 6px; border-radius:8px; }
+  .flex { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .mr6 { margin-right:6px; }
+  .ml6 { margin-left:6px; }
+  .mt8 { margin-top:8px; }
+  .mt12 { margin-top:12px; }
+  .mt4 { margin-top:4px; }
+  .w120 { width:120px; }
+  .w90 { width:90px; }
+  .w200 { width:200px; }
+  .hidden { display:none; }
+  .center { text-align:center; }
+  .sep { height:1px; background:#e5e7eb; margin:8px 0; }
+  /* Balancing UI */
+  .balGrid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:8px; }
+  .balCard { border:1px solid var(--line); border-radius:10px; padding:8px; background:#fff; }
+  .balTitle { font-weight:600; margin-bottom:4px; }
+  .balChips { display:flex; flex-wrap:wrap; gap:6px; }
+  .balRow { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .balBar { position:relative; height:8px; border-radius:999px; background:#e5e7eb; overflow:hidden; margin:4px 0 2px; }
+  .balBarFill { position:absolute; left:0; top:0; bottom:0; width:0%; background:linear-gradient(90deg,#60a5fa,#22c55e); }
+</style>
+</head><body>
+<header>
+  <div class=\"wrap\">
+    <div class=\"links\">
+      <h1>BMS SD Analyzer</h1><span class=\"chip\">__VERSION__</span>
+      <a class=\"pill\" href=\"/\"><- logs</a>
+      <a class=\"pill\" href=\"/dash\">dashboard -></a>
+    </div>
+    <div class=\"controls right\">
+      <input id=\"fileInput\" type=\"file\" multiple class=\"w200\" />
+      <button id=\"btnAnalyze\">Analyze</button>
+      <button id=\"btnCsv\">Export CSV</button>
+      <button id=\"btnPng\">Save PNGs</button>
+      <button id=\"btnClear\">Clear</button>
+    </div>
+  </div>
+</header>
+
+<div class=\"row\">
+  <div class=\"col\" style=\"flex:1 1 520px;\">
+    <h2>Load SD Logs</h2>
+    <div id=\"drop\" class=\"drop\">Drop log files here or use the file picker above</div>
+    <div class=\"mini mt8\">Parses known lines (Vmin/Vmax/SOC/Temp/Current, states & events) and charts them locally â€” no upload.</div>
+    <div id=\"labels\" class=\"labels mt8\"></div>
+  </div>
+  <div class=\"col\" style=\"flex:1 1 320px;\">
+    <h2>Summary</h2>
+    <div class=\"stat\"><div>Lines read</div><div id=\"stLines\">0</div></div>
+    <div class=\"stat\"><div>Samples</div><div id=\"stSamples\">0</div></div>
+    <div class=\"stat\"><div>Vmin (V)</div><div id=\"stVmin\">--</div></div>
+    <div class=\"stat\"><div>Vmax (V)</div><div id=\"stVmax\">--</div></div>
+    <div class=\"stat\"><div>dV (mV)</div><div id=\"stDv\">--</div></div>
+    <div class=\"stat\"><div>Current (A)</div><div id=\"stCur\">--</div></div>
+    <div class=\"stat\"><div>SOC (%)</div><div id=\"stSoc\">--</div></div>
+    <div class=\"stat\"><div>Temp (degC)</div><div id=\"stTemp\">--</div></div>
+    <div class=\"mini mt8\" id=\"stNotes\"></div>
+  </div>
+</div>
+
+<div class=\"row\">
+  <div class=\"col\" style=\"flex:1 1 520px;\">
+    <h2>Charts</h2>
+    <div class=\"grid\">
+      <canvas id=\"voltCanvas\"></canvas>
+      <canvas id=\"dvCanvas\"></canvas>
+      <canvas id=\"currCanvas\"></canvas>
+      <canvas id=\"socTempCanvas\"></canvas>
+    </div>
+    <div class=\"timeline\">
+      <label class=\"nowrap\">Window
+        <select id=\"viewWindow\">
+          <option value=\"200\">200 pts</option>
+          <option value=\"500\">500 pts</option>
+          <option value=\"1000\" selected>1000 pts</option>
+          <option value=\"2000\">2000 pts</option>
+          <option value=\"5000\">5000 pts</option>
+          <option value=\"all\">All</option>
+        </select>
+      </label>
+      <label class=\"nowrap\">Position
+        <input id=\"viewPos\" type=\"range\" min=\"0\" max=\"0\" step=\"1\" value=\"0\" disabled />
+      </label>
+      <button id=\"viewLatest\" class=\"btn-sm\">Go to latest</button>
+      <span id=\"viewPosLabel\" class=\"mini\"></span>
+    </div>
+    <div class=\"mini mt4\">Sampling per parsed line. Time labels show sample index.</div>
+  </div>
+  <div class=\"col\" style=\"flex:1 1 320px;\">
+    <h2>States & Events</h2>
+    <div class=\"badges\" id=\"badges\"></div>
+    <div class=\"box mt8\">
+      <div class=\"mini\"><strong>Registered Events</strong> <button id=\"clearReg\" class=\"btn-sm\">Clear</button></div>
+      <ul id=\"regList\" class=\"scroll200\"></ul>
+    </div>
+    <div class=\"box mt8\">
+      <div class=\"mini\"><strong>Events History</strong> <label class=\"ml6 nowrap\"><input type=\"checkbox\" id=\"histCritical\" checked /> Critical only</label> <button id=\"clearHist\" class=\"btn-sm\">Clear</button></div>
+      <ul id=\"regHist\" class=\"scroll200\"></ul>
+    </div>
+  </div>
+</div>
+
+<div class=\"row\">
+  <div class=\"col\" style=\"flex:1 1 100%;\">
+    <h2>Unparsed Lines (Terminal)</h2>
+    <div class=\"terminal\" id=\"terminal\"></div>
+  </div>
+</div>
+
+<script>(function(){
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('fileInput');
+  const btnAnalyze = document.getElementById('btnAnalyze');
+  const btnCsv = document.getElementById('btnCsv');
+  const btnPng = document.getElementById('btnPng');
+  const btnClear = document.getElementById('btnClear');
+  const labelsEl = document.getElementById('labels');
+  const termEl = document.getElementById('terminal');
+  const badgeEl = document.getElementById('badges');
+  const regListEl = document.getElementById('regList');
+  const regHistEl = document.getElementById('regHist');
+  const histCritical = document.getElementById('histCritical');
+  const clearRegBtn = document.getElementById('clearReg');
+  const clearHistBtn = document.getElementById('clearHist');
+  const sdBalMetaEl = document.getElementById('sdBalMeta');
+  const sdBalPacksEl = document.getElementById('sdBalPacks');
+  const sdBal = { meta:null, vpack:{}, packs:{}, _curPack:null, _timer:null, _lastSig:"" };
+  function sdScheduleRender(){ try{ if (sdBal._timer) clearTimeout(sdBal._timer); }catch(e){} sdBal._timer = setTimeout(sdRenderBal, 150); }
+  function sdRenderBal(){
+    try{
+      // Helper: map Vpack (mV) to gauge percent with 44V -> 0% and 57V -> 100% (linear)
+      function sdVpackGaugePct(mv){
+        try{
+          if (mv==null || !isFinite(mv)) return 0;
+          const v = mv/1000;
+          const v0 = 44, v1 = 57; // volts
+          if (v <= v0) return 0;
+          if (v >= v1) return 1;
+          return (v - v0) / (v1 - v0);
+        }catch(e){ return 0; }
+      }
+      if (sdBalMetaEl){
+        const m=sdBal.meta;
+        if (m){ sdBalMetaEl.textContent = `dv=${m.dv_mV||'--'} mV · Vbat=${m.vbat_mV!=null?(m.vbat_mV/1000).toFixed(3)+'V':'--'} · target=${m.target_mV!=null?(m.target_mV/1000).toFixed(3)+'V':'--'} · above=${m.above??'--'}`; } else { sdBalMetaEl.textContent=''; }
+      }
+      if (!sdBalPacksEl) return;
+      const packs = new Set([...Object.keys(sdBal.vpack||{}).map(Number), ...Object.keys(sdBal.packs||{}).map(Number)]);
+      const maxIdx = Math.max(3, ...(packs.size? Array.from(packs): [0]));
+      const idxs = Array.from({length:maxIdx+1}, (_,i)=>i);
+      const sig = JSON.stringify({meta:sdBal.meta, vpack:sdBal.vpack, packs:sdBal.packs});
+      if (sig === sdBal._lastSig) return; sdBal._lastSig = sig;
+      sdBalPacksEl.innerHTML='';
+      if (!idxs.length){ const p=document.createElement('div'); p.className='mini'; p.textContent='No balancing activity'; sdBalPacksEl.appendChild(p); return; }
+      // Range not used; we use absolute gauge mapping sdVpackGaugePct
+      idxs.forEach(i=>{
+        const info = sdBal.packs[i]||{}; const vp = info.vpack!=null? info.vpack : sdBal.vpack[i];
+        const card = document.createElement('div'); card.className='balCard';
+        const t=document.createElement('div'); t.className='balTitle'; t.textContent='Pack '+i; card.appendChild(t);
+        const row=document.createElement('div'); row.className='balRow';
+        const m=document.createElement('div'); m.className='mini'; m.textContent='Vpack: '+(vp!=null? (vp/1000).toFixed(3)+' V':'--');
+        const cnt=document.createElement('div'); cnt.className='mini'; cnt.textContent='cells: '+(Array.isArray(info.cells)? info.cells.length : 0);
+        row.appendChild(m); row.appendChild(cnt); card.appendChild(row);
+        const bar=document.createElement('div'); bar.className='balBar';
+        const fill=document.createElement('div'); fill.className='balBarFill';
+        let pct = sdVpackGaugePct(vp);
+        fill.style.width = String(Math.round(pct*100)) + '%';
+        bar.appendChild(fill); card.appendChild(bar);
+        const chips=document.createElement('div'); chips.className='balChips';
+        const cells=(info.cells||[]);
+        if (cells.length){ cells.forEach(c=>{ const s=document.createElement('span'); s.className='badge'; s.textContent='C'+c.index+' '+(c.mv!=null? (c.mv/1000).toFixed(3)+' V':''); chips.appendChild(s); }); } else { const s=document.createElement('span'); s.className='mini'; s.textContent='no cells'; chips.appendChild(s); }
+        card.appendChild(chips); sdBalPacksEl.appendChild(card);
+      });
+    }catch(e){}
+  }
+  const ST = {lines:0, samples:0, vmin:null, vmax:null, dv:null, cmin:null, cmax:null, smin:null, smax:null, tmin:null, tmax:null};
+  function updStat(){
+    const fmt=(x,dec=2)=> x==null? '--' : Number(x).toFixed(dec);
+    document.getElementById('stLines').textContent=String(ST.lines);
+    document.getElementById('stSamples').textContent=String(ST.samples);
+    document.getElementById('stVmin').textContent=fmt(ST.vmin,3);
+    document.getElementById('stVmax').textContent=fmt(ST.vmax,3);
+    document.getElementById('stDv').textContent=ST.dv==null? '--' : String(Math.round(ST.dv));
+    document.getElementById('stCur').textContent=(ST.cmin==null&&ST.cmax==null)? '--' : (fmt(ST.cmin,2)+' .. '+fmt(ST.cmax,2));
+    document.getElementById('stSoc').textContent=(ST.smin==null&&ST.smax==null)? '--' : (fmt(ST.smin,1)+' .. '+fmt(ST.smax,1));
+    document.getElementById('stTemp').textContent=(ST.tmin==null&&ST.tmax==null)? '--' : (fmt(ST.tmin,1)+' .. '+fmt(ST.tmax,1));
+  }
+
+    class MiniPlot {
+    constructor(canvas, {series, y2Series=[], fixedLeft=null, fixedRight=null, showValuePanel=true, axisDecLeft=null, axisDecRight=null, windowSize=null} = {}) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d');
+      this.series = (series || []).map(s => ({label: s.label, color: s.color, data: []}));
+      const ySet = Array.isArray(y2Series) ? y2Series : (y2Series != null ? [y2Series] : []);
+      this.y2Series = new Set(ySet);
+      this.fixedLeft = fixedLeft;
+      this.fixedRight = fixedRight;
+      this.showValuePanel = showValuePanel;
+      this.axisDecLeft = axisDecLeft;
+      this.axisDecRight = axisDecRight;
+      this.labels = [];
+      this.hidden = new Set();
+      this.hoverIndex = null;
+      this.viewWindow = Number.isFinite(windowSize) ? Math.max(1, Math.floor(windowSize)) : 1000;
+      this.viewStart = 0;
+      this._viewCount = 0;
+      this._viewStart = 0;
+      this._cssW = 0;
+      this._cssH = 0;
+      const onMove = (e)=>{
+        try{
+          const r = this.canvas.getBoundingClientRect();
+          const x = e.clientX - r.left;
+          const y = e.clientY - r.top;
+          if (!this._plotW || this._plotW <= 0) return;
+          const inside = (x >= this._L && x <= this._L + this._plotW && y >= this._T && y <= this._T + this._plotH);
+          if (!inside){
+            if (this.hoverIndex != null){
+              this.hoverIndex = null;
+              this.draw();
+            }
+            return;
+          }
+          const viewCount = this._viewCount || 0;
+          if (!viewCount) return;
+          const span = Math.max(1, viewCount - 1);
+          let idx = Math.round(((x - this._L) / this._plotW) * span);
+          idx = Math.max(0, Math.min(span, idx));
+          const globalIdx = (this._viewStart || 0) + idx;
+          if (globalIdx !== this.hoverIndex){
+            this.hoverIndex = globalIdx;
+            this.draw();
+          }
+        }catch(err){}
+      };
+      const onLeave = ()=>{
+        if (this.hoverIndex != null){
+          this.hoverIndex = null;
+          this.draw();
+        }
+      };
+      this.canvas.addEventListener('mousemove', onMove);
+      this.canvas.addEventListener('mouseleave', onLeave);
+      const RO = window.ResizeObserver || function(cb){ this.observe = function(){ window.addEventListener('resize', cb); cb(); }; };
+      this._resizeObserver = new RO(()=>this.resize());
+      this._resizeObserver.observe(canvas);
+      this.resize();
+    }
+    totalPoints(){
+      return Math.max(0, ...this.series.map(s=>s.data.length), this.labels.length);
+    }
+    _clampView(){
+      const total = this.totalPoints();
+      if (!Number.isFinite(this.viewWindow) || this.viewWindow < 1) this.viewWindow = 1;
+      if (!Number.isFinite(this.viewStart) || this.viewStart < 0) this.viewStart = 0;
+      const maxStart = Math.max(0, total - this.viewWindow);
+      if (this.viewStart > maxStart) this.viewStart = maxStart;
+      return {total, maxStart};
+    }
+    setHidden(index, hidden){
+      if (hidden) this.hidden.add(index); else this.hidden.delete(index);
+      this.draw();
+    }
+    _fmtVal(v, label){
+      if (v==null || !isFinite(v)) return '--';
+      let dec = 2;
+      const lbl = String(label || '');
+      if (lbl.includes('(V)')) dec = 3;
+      if (lbl.includes('(mV)')) dec = 0;
+      else if (lbl.includes('%')) dec = 1;
+      else if (/Temp/.test(lbl)) dec = 1;
+      return Number(v).toFixed(dec);
+    }
+    resize(){
+      const dpr = window.devicePixelRatio || 1;
+      const r = this.canvas.getBoundingClientRect();
+      const W = Math.max(300, r.width);
+      const H = Math.max(140, r.height);
+      this.canvas.width = W * dpr;
+      this.canvas.height = H * dpr;
+      this.ctx.setTransform(dpr,0,0,dpr,0,0);
+      this._cssW = W;
+      this._cssH = H;
+      this.draw();
+    }
+    push(values, label){
+      for (let i=0;i<values.length;i++){
+        if (!this.series[i]) continue;
+        this.series[i].data.push(values[i]);
+      }
+      if (label !== undefined) this.labels.push(label);
+      this.draw();
+    }
+    updateView({windowSize, start} = {}){
+      if (windowSize != null){
+        if (Number.isFinite(windowSize) && windowSize > 0){
+          this.viewWindow = Math.max(1, Math.floor(windowSize));
+        }
+      }
+      if (start != null){
+        if (Number.isFinite(start) && start >= 0){
+          this.viewStart = Math.floor(start);
+        }
+      }
+      this._clampView();
+      this.draw();
+    }
+    _range(idxs, start, end){
+      let lo = Infinity, hi = -Infinity, any = false;
+      for (const i of idxs){
+        const s = this.series[i];
+        if (!s) continue;
+        for (let gi = start; gi < end; gi++){
+          if (gi < 0 || gi >= s.data.length) continue;
+          const v = s.data[gi];
+          if (v==null || !isFinite(v)) continue;
+          any = true;
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+      }
+      if (!any) return {lo:0, hi:1, any:false};
+      if (hi === lo){ hi += 1; lo -= 1; }
+      const pad = (hi - lo) * 0.1;
+      return {lo: lo - pad, hi: hi + pad, any:true};
+    }
+    draw(){
+      const ctx = this.ctx;
+      if (!ctx) return;
+      const W = this._cssW;
+      const H = this._cssH;
+      ctx.clearRect(0,0,W,H);
+      const L = 40, R = 40, T = 10, B = 28;
+      let plotW = W - L - R;
+      let plotH = H - T - B;
+      if (plotW < 0) plotW = 0;
+      if (plotH < 0) plotH = 0;
+      this._L = L; this._R = R; this._T = T; this._B = B;
+      this._plotW = plotW; this._plotH = plotH;
+      ctx.strokeStyle = '#ddd';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(L, T, plotW, plotH);
+      const {total} = this._clampView();
+      const start = this.viewStart;
+      const end = Math.min(total, start + this.viewWindow);
+      const viewCount = Math.max(0, end - start);
+      this._viewStart = start;
+      this._viewCount = viewCount;
+      const span = Math.max(1, viewCount - 1);
+      const leftIdx = this.series.map((_,i)=>i).filter(i=>!this.y2Series.has(i));
+      const rightIdx = this.series.map((_,i)=>i).filter(i=>this.y2Series.has(i));
+      const dataL = this._range(leftIdx, start, end);
+      const dataR = this._range(rightIdx.length ? rightIdx : leftIdx, start, end);
+      const rL = this.fixedLeft ? (dataL.any ? {lo:Math.min(this.fixedLeft[0], dataL.lo), hi:Math.max(this.fixedLeft[1], dataL.hi)} : {lo:this.fixedLeft[0], hi:this.fixedLeft[1]}) : dataL;
+      const rR = this.fixedRight ? (dataR.any ? {lo:Math.min(this.fixedRight[0], dataR.lo), hi:Math.max(this.fixedRight[1], dataR.hi)} : {lo:this.fixedRight[0], hi:this.fixedRight[1]}) : dataR;
+      const rangeLeft = (rL.hi - rL.lo) || 1;
+      const rangeRight = (rR.hi - rR.lo) || 1;
+      ctx.strokeStyle = '#eee';
+      ctx.beginPath();
+      for(let g=1; g<=2; g++){
+        const y = T + plotH * g/3;
+        ctx.moveTo(L, y);
+        ctx.lineTo(L + plotW, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#666';
+      ctx.font = '12px system-ui, sans-serif';
+      const decL = (this.axisDecLeft ?? 2);
+      const decR = (this.axisDecRight ?? 2);
+      ctx.fillText(rL.hi.toFixed(decL), 4, T+10);
+      ctx.fillText(rL.lo.toFixed(decL), 4, T+plotH);
+      ctx.fillText(rR.hi.toFixed(decR), W-36, T+10);
+      ctx.fillText(rR.lo.toFixed(decR), W-36, T+plotH);
+      const xAt = (idx)=> viewCount <= 1 ? (L + plotW/2) : (L + (idx/span)*plotW);
+      const yAtL = (v)=> T + plotH * (1 - ((v - rL.lo)/rangeLeft));
+      const yAtR = (v)=> T + plotH * (1 - ((v - rR.lo)/rangeRight));
+      for (let i=0; i<this.series.length; i++){
+        if (this.hidden.has(i)) continue;
+        const s = this.series[i];
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = s.color;
+        ctx.beginPath();
+        let hasPoint = false;
+        for (let gi=start; gi<end; gi++){
+          if (gi >= s.data.length) continue;
+          const v = s.data[gi];
+          if (v==null || !isFinite(v)) continue;
+          const x = xAt(gi - start);
+          const y = this.y2Series.has(i) ? yAtR(v) : yAtL(v);
+          if (!hasPoint){ ctx.moveTo(x,y); hasPoint=true; } else { ctx.lineTo(x,y); }
+        }
+        if (hasPoint) ctx.stroke();
+        let lastVal = null;
+        for (let gi=end-1; gi>=start; gi--){
+          if (gi >= s.data.length) continue;
+          const vv = s.data[gi];
+          if (vv!=null && isFinite(vv)){ lastVal = vv; break; }
+        }
+        if (lastVal != null){
+          const y = this.y2Series.has(i) ? yAtR(lastVal) : yAtL(lastVal);
+          const yC = Math.max(T+8, Math.min(T+plotH-8, y));
+          ctx.beginPath();
+          ctx.fillStyle = s.color;
+          ctx.arc(L + plotW - 6, yC, 3, 0, Math.PI*2);
+          ctx.fill();
+          if (this.showValuePanel){
+            const old = ctx.textAlign;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#111';
+            ctx.font = '12px system-ui, sans-serif';
+            ctx.fillText(this._fmtVal(lastVal, s.label), W-4, yC+4);
+            ctx.textAlign = old;
+          }
+        }
+        if (this.showValuePanel){
+          ctx.fillStyle = s.color;
+          ctx.fillRect(L + i*120, H-16, 10, 10);
+          ctx.fillStyle = '#333';
+          ctx.fillText(s.label, L + i*120 + 14, H-7);
+        }
+      }
+      const hoverIdx = (this.hoverIndex != null && this.hoverIndex >= start && this.hoverIndex < end) ? this.hoverIndex : null;
+      if (this.hoverIndex != null && hoverIdx == null){
+        this.hoverIndex = null;
+      }
+      if (hoverIdx != null){
+        try{
+          const gi = hoverIdx;
+          const idx = gi - start;
+          const x = xAt(idx);
+          ctx.strokeStyle = '#aaa';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, T);
+          ctx.lineTo(x, T + plotH);
+          ctx.stroke();
+          const rows = [];
+          const lbl = (gi >=0 && gi < this.labels.length) ? this.labels[gi] : '';
+          rows.push({label:'time', color:'#666', value: lbl});
+          for (let i=0; i<this.series.length; i++){
+            if (this.hidden.has(i)) continue;
+            const s = this.series[i];
+            let v = null;
+            if (gi >=0 && gi < s.data.length) v = s.data[gi];
+            rows.push({label:s.label, color:s.color, value:(v==null || !isFinite(v))? '--' : this._fmtVal(v, s.label)});
+            if (v!=null && isFinite(v)){
+              const y = this.y2Series.has(i) ? yAtR(v) : yAtL(v);
+              ctx.beginPath();
+              ctx.fillStyle = s.color;
+              ctx.arc(x, y, 3, 0, Math.PI*2);
+              ctx.fill();
+            }
+          }
+          ctx.font = '12px system-ui, sans-serif';
+          let maxW = 0;
+          rows.forEach(r=>{ const w = ctx.measureText(r.label + ': ' + r.value).width; if (w>maxW) maxW = w; });
+          const padX = 8, padY = 6, rowH = 18;
+          const boxW = maxW + padX*2;
+          const boxH = padY*2 + rowH*rows.length;
+          let bx = L + 6;
+          let by = T + 6;
+          if (x - L < boxW + 12){ bx = L + 6; } else { bx = x - boxW - 8; }
+          if (by + boxH > T + plotH) by = T + plotH - boxH - 6;
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.fillRect(bx, by, boxW, boxH);
+          ctx.strokeStyle = '#ddd';
+          ctx.strokeRect(bx, by, boxW, boxH);
+          rows.forEach((r, idxRow)=>{
+            const yy = by + padY + idxRow*rowH + 12;
+            ctx.fillStyle = (idxRow === 0 ? '#111' : r.color);
+            ctx.fillText(r.label + ': ' + r.value, bx + padX, yy);
+          });
+        }catch(err){}
+      }
+    }
+  }
+
+
+  // Charts
+  const voltChart = new MiniPlot(document.getElementById('voltCanvas'), { series:[{label:'Vmax (V)', color:'#dc2626'},{label:'Vmin (V)', color:'#2563eb'}], fixedLeft:[3.0,3.65], axisDecLeft:3 });
+  const dvChart   = new MiniPlot(document.getElementById('dvCanvas'),   { series:[{label:'dV (mV)', color:'#111827'}], fixedLeft:[0,50] });
+  const currChart = new MiniPlot(document.getElementById('currCanvas'), { series:[{label:'Current (A)', color:'#10b981'}], fixedLeft:[-100,100] });
+  const stChart   = new MiniPlot(document.getElementById('socTempCanvas'), { series:[{label:'SOC (%)', color:'#7c3aed'},{label:'Temp (degC)', color:'#f59e0b'}], y2Series:[1], fixedLeft:[0,100] });
+
+  // Parsing helpers (aligned with dash page)
+  function parseNumberFrom(text, startIdx){ const sub=text.slice(startIdx); const m=sub.match(/[+\-]?\d+(?:\.\d+)?/); return m? parseFloat(m[0]) : null; }
+  function findKeyValue(line, keys){ const low=line.toLowerCase(); for(const k of keys){ let idx = low.indexOf(k); while(idx!==-1){ let j = idx + k.length; while(j<line.length && /\s/.test(line[j])) j++; if(j<line.length && (line[j] === ':' || line[j] === '=')) j++; while (j<line.length && /\s/.test(line[j])) j++; const num = parseNumberFrom(line, j); if (num !== null) return num; idx = low.indexOf(k, idx+1);} } return null; }
+  function convVolt(x){ return (x!=null && x>60)? x/1000 : x; }
+  function convSOC(x){ if (x==null) return null; if (x>100 && x<=1000) return x/10; if (x>1000) return x/100; return x; }
+  function convCurr(x){ if (x==null) return null; if (Math.abs(x)>=30 && !(/[0-9]\./.test(String(x)))) return x/1000; return x; }
+  const KEYSETS = { vmin:['vmin','v_min','minv'], vmax:['vmax','v_max','maxv'], soc:['soc','stateofcharge'], temp:['temp','t','temperature'], curr:['current','i','iavg','ibatt'] };
+  const RE_OP_STATE = /^-{5}\s*OP_STATE_([A-Z_]+):\s*bmsState:\s*([A-Z]+)/;
+  const RE_EVENT_PREFIXES = [
+    {re:/^OpState->(INIT|CHARGING|PRE_CHARGE|LOAD_ENABLED|BATTERY_DEAD|POWER_DOWN|EXTERNAL|ERROR|ERROR_PRECHARGE|BALANCING|CHARGED|FORCEON)$/, field:'op_state'},
+    {re:/^BMS->(IDLE|DISCHARGE|CHARGE)$/, field:'bms_state'},
+    {re:/^OV->(NORMAL|TRIPPED|RECOVERY)$/, field:'ov_state'},
+    {re:/^UV->(NORMAL|TRIPPED|RECOVERY)$/, field:'uv_state'},
+    {re:/^OT->(NORMAL|TRIPPED|RECOVERY)$/, field:'ot_state'},
+    {re:/^UT->(NORMAL|TRIPPED|RECOVERY)$/, field:'ut_state'},
+    {re:/^OC->(NORMAL|TRIPPED|RECOVERY)$/, field:'oc_state'},
+    {re:/^SC->(NORMAL|TRIPPED|RECOVERY)$/, field:'sc_state'},
+    {re:/^INV->(OK|FAULT)$/, field:'inv_state'},
+    {re:/^ChargerDetected->(ON|OFF)$/, field:'charger'},
+    {re:/^ChargeBalanceActive->(ON|OFF)$/, field:'balance_window'},
+    {re:/^SOA_D->(IN|OUT)$/, field:'soa_discharge'},
+    {re:/^SOA_C->(IN|OUT)$/, field:'soa_charge'},
+    {re:/^PowerdownFlag->(SET|CLR)$/, field:'powerdown_flag'},
+    {re:/^SOC_SaveReq->(SET|CLR)$/, field:'soc_save'},
+    {re:/^SD_ERR_CELL:(\d+)$/, field:'sd_err_cell_code'},
+    {re:/^SD_ERR_TEMP:(\d+)$/, field:'sd_err_temp_code'},
+    {re:/^SD_ERR_SYS:(\d+)$/, field:'sd_err_sys_code'}
+  ];
+
+  function termAppend(line){ const d=document.createElement('div'); d.className='term-row'; d.textContent=line; termEl.appendChild(d); while(termEl.children.length>2000) termEl.removeChild(termEl.firstChild); termEl.scrollTop = termEl.scrollHeight; }
+  const state = { op_state:null, bms_state:null, ov_state:null, inv_state:null, charger:null, balance_window:null, soa_discharge:null, soa_charge:null, powerdown_flag:null, soc_save:null };
+  const reg = { events:{}, hist:[] };
+  function recordReg(name, val){ if(!name) return; const n=String(name); if(!reg.events[n]) reg.events[n]={count:0,last:null,at:0}; const e=reg.events[n]; const changed=String(e.last)!==String(val); e.count=(e.count||0)+1; e.last=(val==null? null:String(val)); e.at=Date.now(); if(changed) pushHist(n,e.last,false); renderReg(); }
+  function pushHist(name, val, critical){ if(!Array.isArray(reg.hist)) reg.hist=[]; reg.hist.push({name,val,at:Date.now(),critical:!!critical}); if(reg.hist.length>400) reg.hist=reg.hist.slice(-400); renderHist(); }
+  function recordProt(name, val, criticalVals){ const key='prot:'+String(name); if(!reg.events[key]) reg.events[key]={count:0,last:null,at:0}; const e=reg.events[key]; const prev=e.last; let should=false; if(Array.isArray(criticalVals)){ const up=String(val).toUpperCase(); should=criticalVals.includes(up);} else if(typeof val==='number'){ should=(val!==0);} else { const up=String(val).toUpperCase(); should=(up && !['NORMAL','OK','IN','CLR','--'].includes(up)); } const changed=String(prev)!==String(val); if(should && changed) e.count=(e.count||0)+1; e.last=val; e.at=Date.now(); if(changed) pushHist(key,val,!!should); renderReg(); }
+  function renderReg(){ if(!regListEl) return; regListEl.innerHTML=''; const names=Object.keys(reg.events).sort(); for(const name of names){ const e=reg.events[name]; const li=document.createElement('li'); const ts=e.at? (' @ '+new Date(e.at).toLocaleTimeString()):''; const isProt=name.startsWith('prot:'); const disp=isProt? ('PROT '+name.slice(5)) : name; li.textContent=disp+' -> '+(e.last??'--')+' ('+(e.count||0)+')'+ts; if(isProt){ const up=String(e.last||'').toUpperCase(); if(['TRIPPED','OUT','FAULT','SET'].includes(up) || (typeof e.last==='number' && e.last!==0)){ li.style.color='#b91c1c'; } } regListEl.appendChild(li); } }
+  function renderHist(){ if(!regHistEl) return; regHistEl.innerHTML=''; const critOnly=!!(histCritical && histCritical.checked); const arr=Array.isArray(reg.hist)? reg.hist:[]; for(const it of arr){ if(critOnly && !it.critical) continue; const li=document.createElement('li'); const t=new Date(it.at).toLocaleTimeString(); const disp=it.name.startsWith('prot:')? ('PROT '+it.name.slice(5)) : it.name; li.textContent='['+t+'] '+disp+' -> '+it.val; if(it.critical) li.style.color='#b91c1c'; regHistEl.appendChild(li);} }
+
+  function renderBadges(){ badgeEl.innerHTML=''; Object.entries(state).forEach(([k,v])=>{ if(v==null) return; const b=document.createElement('span'); b.className='badge'; b.textContent=`${k}:${v}`; badgeEl.appendChild(b); }); }
+
+  const samples=[]; const latest={vmin:null,vmax:null,soc:null,temp:null,curr:null};
+  const charts=[voltChart,dvChart,currChart,stChart];
+  const timelineRange=document.getElementById('viewPos');
+  const timelineLabel=document.getElementById('viewPosLabel');
+  const timelineWindowSel=document.getElementById('viewWindow');
+  const timelineLatestBtn=document.getElementById('viewLatest');
+  let windowMode='fixed';
+  let windowSizeValue=1000;
+  let activeWindowSize=1000;
+  let viewStartIdx=0;
+  let followLatest=true;
+
+  function computeWindowSize(total){
+    return windowMode==='all'? Math.max(1,total) : windowSizeValue;
+  }
+  function applyChartView(){
+    charts.forEach(ch=>ch.updateView({windowSize:activeWindowSize,start:viewStartIdx}));
+  }
+  function updateTimelineLabel(total){
+    if(!timelineLabel) return;
+    if(!total){ timelineLabel.textContent='no samples'; return; }
+    const end=Math.min(total, viewStartIdx + activeWindowSize);
+    timelineLabel.textContent=`samples ${viewStartIdx+1}-${end} of ${total}`;
+  }
+  function syncTimeline(forceFollow){
+    const total=samples.length;
+    activeWindowSize=computeWindowSize(total);
+    if(!Number.isFinite(activeWindowSize) || activeWindowSize<1) activeWindowSize=1;
+    const maxStart=Math.max(0, total - activeWindowSize);
+    if(forceFollow) followLatest=true;
+    if(followLatest){
+      viewStartIdx=maxStart;
+    } else if (viewStartIdx>maxStart){
+      viewStartIdx=maxStart;
+    }
+    applyChartView();
+    if(timelineRange){
+      timelineRange.max=String(maxStart);
+      timelineRange.value=String(viewStartIdx);
+      timelineRange.disabled=maxStart===0;
+    }
+    updateTimelineLabel(total);
+  }
+  if(timelineRange){
+    timelineRange.addEventListener('input', ()=>{
+      const total=samples.length;
+      activeWindowSize=computeWindowSize(total);
+      if(!Number.isFinite(activeWindowSize) || activeWindowSize<1) activeWindowSize=1;
+      const maxStart=Math.max(0, total - activeWindowSize);
+      let value=Number(timelineRange.value);
+      if(!Number.isFinite(value)) value=0;
+      value=Math.max(0, Math.min(maxStart, value));
+      viewStartIdx=value;
+      followLatest=(value===maxStart);
+      applyChartView();
+      updateTimelineLabel(total);
+    });
+  }
+  if(timelineWindowSel){
+    timelineWindowSel.addEventListener('change', ()=>{
+      const val=timelineWindowSel.value;
+      if(val==='all'){
+        windowMode='all';
+      } else {
+        windowMode='fixed';
+        const num=parseInt(val,10);
+        if(Number.isFinite(num) && num>0) windowSizeValue=Math.max(10,num);
+      }
+      followLatest=true;
+      syncTimeline(true);
+    });
+  }
+  if(timelineLatestBtn){
+    timelineLatestBtn.addEventListener('click', ()=>{
+      followLatest=true;
+      syncTimeline(true);
+    });
+  }
+  syncTimeline(true);
+  // CSV parsing state
+  let csvType = null; // 'sys' | 'cell' | 'events' | 'temp'
+  let csvHdr = null;  // array of header columns
+  function tryCSVHeader(line){
+    const t = line.replace(/\uFEFF/, '').trim();
+    if (!/^timeLogging\s*,/i.test(t)) return false;
+    const hdr = t.split(',').map(s=>s.trim());
+    if (hdr.some(h=>/ModuleVoltage/i.test(h))) { csvType='sys'; csvHdr=hdr; return true; }
+    if (hdr.some(h=>/cellVoltage0/i.test(h)))   { csvType='cell'; csvHdr=hdr; return true; }
+    if (hdr.some(h=>/temperature1/i.test(h)))   { csvType='temp'; csvHdr=hdr; return true; }
+    if (hdr.some(h=>/event/i.test(h)))          { csvType='events'; csvHdr=hdr; return true; }
+    return false;
+  }
+  function idxOf(name){ if (!csvHdr) return -1; const i = csvHdr.findIndex(h=> h===name); return i; }
+  function processCSV(line){
+    const t = line.replace(/\uFEFF/, '').trim(); if (!t) return false;
+    // Header detection
+    if (tryCSVHeader(t)) return 'header';
+    if (!csvType || !csvHdr) return false;
+    // Guard: ignore obviously non-data lines
+    if (!/^[-+0-9]/.test(t)) return false;
+    const parts = t.split(',');
+    try {
+      if (csvType === 'sys'){
+        // Expect systemInformationLog.csv columns
+        const iVmin = csvHdr.findIndex(h=> /MinCellVoltage/i.test(h));
+        const iVmax = csvHdr.findIndex(h=> /MaxCellVoltage/i.test(h));
+        const iSOC  = csvHdr.findIndex(h=> /^SOC$/i.test(h));
+        const iTemp = csvHdr.findIndex(h=> /AvgTemperature/i.test(h));
+        const iCur  = csvHdr.findIndex(h=> /ModuleCurrent/i.test(h));
+        const vminRaw = (iVmin>=0? parseFloat(parts[iVmin]) : NaN);
+        const vmaxRaw = (iVmax>=0? parseFloat(parts[iVmax]) : NaN);
+        const socRaw  = (iSOC>=0 ? parseFloat(parts[iSOC])  : NaN);
+        const tempRaw_mdeg = (iTemp>=0 ? parseFloat(parts[iTemp]) : NaN);
+        const tempRaw = isNaN(tempRaw_mdeg) ? NaN : (tempRaw_mdeg/1000);
+        const curRaw_mA  = (iCur>=0 ? parseFloat(parts[iCur])  : NaN);
+        const curRaw = isNaN(curRaw_mA) ? NaN : (curRaw_mA/1000);
+        if (!isNaN(vminRaw)) latest.vmin = convVolt(vminRaw);
+        if (!isNaN(vmaxRaw)) latest.vmax = convVolt(vmaxRaw);
+        if (!isNaN(socRaw))  latest.soc  = convSOC(socRaw);
+        if (!isNaN(tempRaw)) latest.temp = tempRaw;
+        if (!isNaN(curRaw))  latest.curr = curRaw;
+        pushSample(String(samples.length));
+        return 'sample';
+      }
+      if (csvType === 'cell'){
+        // cellVoltageLog.csv: time,(optional module),cellVoltage0..15
+        // Find the first cell column index in header
+        let c0 = csvHdr.findIndex(h=> /cellVoltage0/i.test(h));
+        if (c0 < 0) return false;
+        const vals = [];
+        for (let i=0;i<16;i++){
+          const idx = c0 + i; if (idx >= parts.length) break;
+          const n = parseFloat(parts[idx]); if (!isNaN(n)) vals.push(n);
+        }
+        if (vals.length){
+          // raw mV values
+          const vminRaw = Math.min.apply(null, vals);
+          const vmaxRaw = Math.max.apply(null, vals);
+          latest.vmin = convVolt(vminRaw);
+          latest.vmax = convVolt(vmaxRaw);
+          pushSample(String(samples.length));
+          return 'sample';
+        }
+        return false;
+      }
+            if (csvType === 'temp'){
+        // packTemperatureLog.csv: time,(implicit module),temperature1..8 (milli-degC)
+        const idxs = [];
+        for (let i=0;i<csvHdr.length;i++){
+          if (/^temperature\d+$/i.test(csvHdr[i])) idxs.push(i);
+        }
+        let temps = [];
+        if (idxs.length){
+          for (const i of idxs){ const v = parseFloat(parts[i]); if (!isNaN(v)) temps.push(v); }
+        } else {
+          for (let k=Math.max(0, parts.length-8); k<parts.length; k++){ const v = parseFloat(parts[k]); if (!isNaN(v)) temps.push(v); }
+        }
+        if (temps.length){
+          const tempsC = temps.map(v=> v/1000);
+          const avg = tempsC.reduce((a,b)=>a+b,0)/tempsC.length;
+          latest.temp = avg;
+          pushSample(String(samples.length));
+          return 'sample';
+        }
+        return false;
+      }if (csvType === 'events'){
+        const iEv = csvHdr.findIndex(h=> /event/i.test(h));
+        if (iEv>=0){ const ev = parts.slice(iEv).join(',').trim(); if (ev){ termAppend(ev); return 'event'; } }
+        return false;
+      }
+      // temp block: not used for charts directly
+      return false;
+    } catch(e){ return false; }
+  }
+  function pushSample(idxLabel){ const dv=(latest.vmax!=null&&latest.vmin!=null)? (latest.vmax-latest.vmin) : null; const dv_mV=(dv==null? null: dv*1000);
+    voltChart.push([latest.vmax!=null?latest.vmax:null, latest.vmin!=null?latest.vmin:null], idxLabel);
+    dvChart.push([dv_mV!=null? dv_mV:null], idxLabel);
+    currChart.push([latest.curr!=null? latest.curr:null], idxLabel);
+    stChart.push([latest.soc!=null? latest.soc:null, latest.temp!=null? latest.temp:null], idxLabel);
+    samples.push({ts:idxLabel,vmin:latest.vmin,vmax:latest.vmax,curr:latest.curr,soc:latest.soc,temp:latest.temp,dv_mV});
+    // stats
+    ST.samples = samples.length;
+    if(latest.vmin!=null) ST.vmin = (ST.vmin==null? latest.vmin : Math.min(ST.vmin, latest.vmin));
+    if(latest.vmax!=null) ST.vmax = (ST.vmax==null? latest.vmax : Math.max(ST.vmax, latest.vmax));
+    if(dv_mV!=null) ST.dv = (ST.dv==null? dv_mV : Math.max(ST.dv, dv_mV));
+    if(latest.curr!=null){ ST.cmin = (ST.cmin==null? latest.curr : Math.min(ST.cmin, latest.curr)); ST.cmax=(ST.cmax==null? latest.curr : Math.max(ST.cmax, latest.curr)); }
+    if(latest.soc!=null){ ST.smin = (ST.smin==null? latest.soc : Math.min(ST.smin, latest.soc)); ST.smax=(ST.smax==null? latest.soc : Math.max(ST.smax, latest.soc)); }
+    if(latest.temp!=null){ ST.tmin = (ST.tmin==null? latest.temp : Math.min(ST.tmin, latest.temp)); ST.tmax=(ST.tmax==null? latest.temp : Math.max(ST.tmax, latest.temp)); }
+    updStat();
+  }
+
+  function tryParseState(line){ const m=RE_OP_STATE.exec(line); if(m){ state.op_state=m[1]; state.bms_state=m[2]; recordReg('op_state', m[1]); recordReg('bms_state', m[2]); renderBadges(); return true; }
+    for(const e of RE_EVENT_PREFIXES){ const mm=e.re.exec(line.trim()); if(mm){ const val=mm[1]; state[e.field]=val; recordReg(e.field,val); switch(e.field){ case 'ov_state': recordProt('OV', val, ['TRIPPED','RECOVERY']); break; case 'uv_state': recordProt('UV', val, ['TRIPPED','RECOVERY']); break; case 'ot_state': recordProt('OT', val, ['TRIPPED','RECOVERY']); break; case 'ut_state': recordProt('UT', val, ['TRIPPED','RECOVERY']); break; case 'oc_state': recordProt('OC', val, ['TRIPPED','RECOVERY']); break; case 'sc_state': recordProt('SC', val, ['TRIPPED','RECOVERY']); break; case 'inv_state': recordProt('INV', val, ['FAULT']); break; case 'soa_discharge': recordProt('SOA_D', val, ['OUT']); break; case 'soa_charge': recordProt('SOA_C', val, ['OUT']); break; case 'powerdown_flag': recordProt('PDN', val, ['SET']); break; default: if(e.field==='sd_err_cell_code'||e.field==='sd_err_temp_code'||e.field==='sd_err_sys_code'){ const num=Number(val); const name=e.field.replace('_code','').toUpperCase(); recordProt(name, Number.isFinite(num)? num:0);} }
+      renderBadges(); return true; } } return false; }
+
+    function tryParseLegacyCsv(line){
+    try{
+      const t = String(line||'').trim();
+      if (!/^[0-9]+(?:\s*,\s*[0-9]+)+$/.test(t)) return false;
+      const parts = t.split(',').map(s=>s.trim());
+      if (parts.length < 8) return false;
+      const num = i => { const v = parseFloat(parts[i]); return Number.isFinite(v) ? v : null; };
+      const vmax_mV = num(4), vmin_mV = num(5), curr_mA = num(2), temp_dC = num(3);
+      if (vmin_mV != null) latest.vmin = vmin_mV/1000;
+      if (vmax_mV != null) latest.vmax = vmax_mV/1000;
+      if (curr_mA != null) latest.curr = curr_mA/1000;
+      if (temp_dC != null) latest.temp = temp_dC/10;
+      latest.updatedAt = Date.now();
+      return true;
+    } catch(e){ return false; }
+  }
+function processLine(line){
+    if (tryParseLegacyCsv(line)) return 'sample';
+
+    // Balancing meta and selections
+    {
+      const mm = /^\[BAL-SEL\]\s*dv=(\d+)\s*mV\s*Vbat=(\d+)\s*mV\s*Target=(\d+)\s*mV\s*Above=(\d+)/i.exec(line);
+      if (mm){ sdBal.meta={dv_mV:Number(mm[1]), vbat_mV:Number(mm[2]), target_mV:Number(mm[3]), above:Number(mm[4])}; sdBal.packs={}; sdBal._curPack=null; sdScheduleRender(); return 'event'; }
+    }
+    if (/^\[BAL-VPACK\]/i.test(line)) { return 'event'; }
+    // Vpack lines in SD logs: accept flexible formats and multiple per line
+    {
+      const re = /P\s*(\d+)\s*[=:]\s*(\d+)\s*(?:mV)?/gi;
+      let any=false, m;
+      while ((m = re.exec(line))){ const i=Number(m[1]); const v=Number(m[2]); sdBal.vpack[i]=v; any=true; }
+      if (any){ sdScheduleRender(); return 'event'; }
+    }
+    {
+      const mm = /^\[BAL-SEL\]\s*Pack\s+(\d+)\s+Vpack=(\d+)\s*mV\s*\((\d+)\):/i.exec(line);
+      if (mm){ const i=Number(mm[1]); const vp=Number(mm[2]); const cnt=Number(mm[3]); sdBal.packs[i]={vpack:vp,count:cnt,cells:[]}; sdBal._curPack=i; sdScheduleRender(); return 'event'; }
+    }
+    {
+      const mm = /^\s*C(\d+)=(\d+)/i.exec(line); if (mm && sdBal._curPack!=null){ const pk=sdBal._curPack; if(!sdBal.packs[pk]) sdBal.packs[pk]={vpack:null,count:null,cells:[]}; sdBal.packs[pk].cells.push({index:Number(mm[1]), mv:Number(mm[2])}); sdScheduleRender(); return 'event'; }
+    }
+
+    const vmin = findKeyValue(line, KEYSETS.vmin);
+    const vmax = findKeyValue(line, KEYSETS.vmax);
+    const soc  = findKeyValue(line, KEYSETS.soc);
+    const temp = findKeyValue(line, KEYSETS.temp);
+    const curr = findKeyValue(line, KEYSETS.curr);
+    let parsed=false;
+    if (vmin!=null){ latest.vmin=convVolt(vmin); parsed=true; }
+    if (vmax!=null){ latest.vmax=convVolt(vmax); parsed=true; }
+    if (soc!=null) { latest.soc =convSOC(soc);   parsed=true; }
+    if (temp!=null){ latest.temp=temp;           parsed=true; }
+    if (curr!=null){ latest.curr=convCurr(curr); parsed=true; }
+    if (parsed) return 'sample';
+    if (tryParseState(line)) return 'event';
+    return false;
+  }
+
+  function analyzeText(text){
+    // reset
+    termEl.innerHTML=''; badgeEl.innerHTML=''; regListEl.innerHTML=''; regHistEl.innerHTML='';
+    samples.length=0; Object.keys(state).forEach(k=> state[k]=null);
+    latest.vmin=latest.vmax=latest.soc=latest.temp=latest.curr=null;
+    ST.lines=0; ST.samples=0; ST.vmin=ST.vmax=ST.dv=ST.cmin=ST.cmax=ST.smin=ST.smax=ST.tmin=ST.tmax=null; updStat();
+    voltChart.series.forEach(s=> s.data=[]); dvChart.series.forEach(s=>s.data=[]); currChart.series.forEach(s=>s.data=[]); stChart.series.forEach(s=>s.data=[]);
+    voltChart.labels=dvChart.labels=currChart.labels=stChart.labels=[]; voltChart.draw(); dvChart.draw(); currChart.draw(); stChart.draw();
+    followLatest = true;
+    viewStartIdx = 0;
+    syncTimeline(true);
+    const lines = String(text||'').replace(/\\r/g,'').split('\\n');
+    ST.lines = lines.length; updStat();
+    let idx=0; for(const line of lines){
+      if(!line) { idx++; continue; }
+      const rCSV = processCSV(line);
+      if (rCSV === 'sample' || rCSV === 'event' || rCSV === 'header'){ idx++; continue; }
+      const r = processLine(line);
+      if(r==='sample'){ pushSample(String(idx)); } else if(!r){ termAppend(line); }
+      idx++;
+    }
+    renderReg(); renderHist(); renderBadges();
+    syncTimeline(true);
+    try { var noteEl=document.getElementById('stNotes'); if (noteEl) { noteEl.textContent = (ST.samples>0? '' : 'No samples parsed. Check CSV headers (timeLogging, ...)'); } } catch(e){}
+  }
+
+  function readFiles(files){ if(!files || !files.length) return; labelsEl.innerHTML='';
+    const readers=[]; const names=[];
+    for(const f of files){ names.push(f.name); readers.push(new Promise((resolve,reject)=>{ const fr=new FileReader(); fr.onload=()=>resolve(String(fr.result||'')); fr.onerror=()=>reject(fr.error||new Error('read error')); fr.readAsText(f); })); }
+    Promise.all(readers).then(parts=>{ const text=parts.join('\\n'); const lab=document.createElement('span'); lab.textContent='Files: '+names.join(', '); labelsEl.appendChild(lab); analyzeText(text); }).catch(err=>{ const lab=document.createElement('span'); lab.textContent='Read error: '+(err && err.message? err.message: String(err)); labelsEl.appendChild(lab); });
+  }
+
+  // Export
+  btnCsv.addEventListener('click', ()=>{
+    const rows = [['sample','vmin','vmax','dV_mV','current_A','SOC_pct','temp_degC']];
+    for(const s of samples){ rows.push([s.ts, s.vmin, s.vmax, s.dv_mV, s.curr, s.soc, s.temp]); }
+    const csv = rows.map(r=> r.map(x=> x==null? '': x).join(',')).join('\\n');
+    const blob = new Blob([csv], {type:'text/csv'}); const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download='bms_sd_analyzed.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  });
+  btnPng.addEventListener('click', ()=>{
+    const items=[{id:'voltCanvas',name:'sd_volt.png'},{id:'dvCanvas',name:'sd_dv.png'},{id:'currCanvas',name:'sd_curr.png'},{id:'socTempCanvas',name:'sd_soc_temp.png'}];
+    items.forEach(c=>{ const el=document.getElementById(c.id); if(!el) return; const url=el.toDataURL('image/png'); const a=document.createElement('a'); a.href=url; a.download=c.name; a.click(); });
+  });
+  btnClear.addEventListener('click', ()=>{ analyzeText(''); labelsEl.innerHTML=''; try{ sdBal.meta=null; sdBal.vpack={}; sdBal.packs={}; sdBal._curPack=null; sdRenderBal(); }catch(e){} });
+
+  // file/dnd
+  btnAnalyze.addEventListener('click', ()=> readFiles(fileInput.files));
+  fileInput.addEventListener('change', ()=> readFiles(fileInput.files));
+  ;['dragenter','dragover'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('drag'); }));
+  ;['dragleave','drop'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); e.stopPropagation(); drop.classList.remove('drag'); }));
+  drop.addEventListener('drop', e=>{ const files=e.dataTransfer && e.dataTransfer.files; if(files && files.length) readFiles(files); });
+
+  if (clearRegBtn) clearRegBtn.addEventListener('click', ()=>{ reg.events={}; renderReg(); });
+  if (clearHistBtn) clearHistBtn.addEventListener('click', ()=>{ reg.hist=[]; renderHist(); });
+  if (histCritical) histCritical.addEventListener('change', ()=> renderHist());
+})();</script>
+</body></html>"""
+
+def get_laptop_ip():
+  try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8", 80))
+    ip = s.getsockname()[0]; s.close(); return ip
+  except Exception: return "127.0.0.1"
+
+def make_http_handler(viewer_bytes: bytes, dash_bytes: bytes, sd_bytes: bytes, state: dict, switch_serial_fn):
+  class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+      # Allow back/forward cache to preserve DOM/state when navigating
+      # between pages. Avoid 'no-store' which can disable bfcache.
+      nocache = "no-cache, max-age=0, must-revalidate"
+      # API: serial ports/status/select
+      try:
+        url = urlparse(self.path)
+        if url.path == "/api/serial/ports":
+          ports = []
+          try:
+            for p in serial.tools.list_ports.comports():
+              ports.append({"device": p.device, "description": getattr(p, 'description', '')})
+          except Exception:
+            ports = []
+          body = json.dumps({"ports": ports}).encode('utf-8')
+          self.send_response(200)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Cache-Control", nocache)
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers(); self.wfile.write(body); return
+        if url.path == "/api/serial/status":
+          s = state.get("serial")
+          info = {"port": getattr(s, 'port', None), "baud": getattr(s, 'baudrate', None), "is_open": bool(getattr(s, 'is_open', False))}
+          body = json.dumps(info).encode('utf-8')
+          self.send_response(200)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Cache-Control", nocache)
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers(); self.wfile.write(body); return
+        if url.path == "/api/serial/select":
+          qs = parse_qs(url.query)
+          port = (qs.get('port') or [None])[0]
+          baud_s = (qs.get('baud') or [None])[0]
+          baud = None
+          try:
+            if baud_s is not None: baud = int(baud_s)
+          except Exception:
+            baud = None
+          ok, msg, cur = switch_serial_fn(port, baud)
+          body = json.dumps({"ok": ok, "message": msg, "current": cur}).encode('utf-8')
+          self.send_response(200 if ok else 400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Cache-Control", nocache)
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers(); self.wfile.write(body); return
+      except Exception:
+        # Fall through to regular routing
+        pass
+      if self.path == "/favicon.ico":
+        # Quiet browser's favicon request
+        self.send_response(204)
+        self.end_headers(); return
+      if self.path in ("/", "/index.html"):
+        body = viewer_bytes
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", nocache)
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body); return
+      if self.path == "/dash":
+        body = dash_bytes
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", nocache)
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body); return
+      if self.path == "/sd":
+        body = sd_bytes
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", nocache)
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body); return
+      body = b"Not Found"
+      self.send_response(404)
+      self.send_header("Content-Type", "text/plain; charset=utf-8")
+      self.send_header("Cache-Control", nocache)
+      self.send_header("Pragma", "no-cache")
+      self.send_header("Expires", "0")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+      nocache = "no-cache, max-age=0, must-revalidate"
+      try:
+        url = urlparse(self.path)
+        if url.path == "/api/serial/select":
+          length = int(self.headers.get('Content-Length') or '0')
+          if length:
+            try: _ = self.rfile.read(length)
+            except Exception: pass
+          qs = parse_qs(url.query)
+          port = (qs.get('port') or [None])[0]
+          baud_s = (qs.get('baud') or [None])[0]
+          baud = None
+          try:
+            if baud_s is not None: baud = int(baud_s)
+          except Exception:
+            baud = None
+          ok, msg, cur = switch_serial_fn(port, baud)
+          body = json.dumps({"ok": ok, "message": msg, "current": cur}).encode('utf-8')
+          self.send_response(200 if ok else 400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Cache-Control", nocache)
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers(); self.wfile.write(body); return
+      except Exception:
+        pass
+      self.send_response(404)
+      self.end_headers()
+    def log_message(self, *args, **kwargs): pass
+  return Handler
+
+def serial_reader(ser, out_q: "queue.Queue[str]", stop_evt: threading.Event):
+  banner = f"\n[Serial opened: {ser.port} @ {ser.baudrate}]\n"; out_q.put(banner)
+  while not stop_evt.is_set():
+    try:
+      n = ser.in_waiting; data = ser.read(n if n else 1)
+      if data:
+        try: text = data.decode("utf-8", errors="replace")
+        except Exception: text = data.decode("latin-1", errors="replace")
+        out_q.put(text)
+      else:
+        time.sleep(0.005)
+    except serial.SerialException:
+      out_q.put("\n[Serial error - reconnecting in 2s]\n"); time.sleep(2)
+    except Exception: time.sleep(0.01)
+
+def backlog_add(state, chunk: str):
+  if not isinstance(chunk, str):
+    try: chunk = chunk.decode("utf-8", errors="replace")
+    except Exception: chunk = str(chunk)
+  state["backlog"].append(chunk); state["backlog_size"] += len(chunk)
+  while state["backlog_size"] > state["backlog_limit"] and state["backlog"]:
+    removed = state["backlog"].popleft(); state["backlog_size"] -= len(removed)
+
+def backlog_dump(state) -> str: return "".join(state["backlog"])
+
+async def fanout_task(state):
+  loop = asyncio.get_running_loop(); q: queue.Queue = state["out_q"]
+  while True:
+    chunk = await loop.run_in_executor(None, q.get)
+    if not chunk:
+      continue
+    backlog_add(state, chunk)
+    with state["clients_lock"]:
+      clients = list(state["clients"])
+    if not clients:
+      continue
+    # Send concurrently and drop slow/broken clients
+    tasks = [(c, asyncio.create_task(c.send(chunk))) for c in clients]
+    done, pending = await asyncio.wait([t for _, t in tasks], timeout=0.75)
+    dead = []
+    for (c, t) in tasks:
+      if t in pending:
+        t.cancel()
+        dead.append(c)
+      elif t in done and t.exception() is not None:
+        dead.append(c)
+    if dead:
+      with state["clients_lock"]:
+        for d in dead:
+          try: state["clients"].discard(d)
+          except Exception: pass
+
+def list_ports_hint():
+  ports = [p.device for p in serial.tools.list_ports.comports()]
+  return f"Available serial ports: {', '.join(ports)}" if ports else "No serial ports found."
+
+def sanitize_html(s: str) -> str:
+  """Fix mojibake and known bad tokens inside embedded HTML/JS.
+  Keeps everything ASCII-safe or proper UTF-8.
+  """
+  repl = [
+    # Status texts and punctuation
+    ("(connectingÃ¢â‚¬Â¦)", "(connecting...)"),
+    ("disconnected Ã¢â‚¬â€ retryingÃ¢â‚¬Â¦", "disconnected; retrying..."),
+    ("error Ã¢â‚¬â€ retryingÃ¢â‚¬Â¦", "error; retrying..."),
+    ("Ã¢â‚¬Â¦", "..."),
+    ("Ã¢â‚¬â€", "-"),
+    ("Ã¢â‚¬â€œ", "-"),
+    # Links and arrows
+    ("Ã¢â€ â€™", "->"),
+    ("Ã¢â€ Â", "<-"),
+    (" +? logs", "<- logs"),
+    # Degree symbols and units
+    ("Ã‚Â°C", "Â°C"),
+    ("A C", "Â°C"),
+    ("Ã‚Â·", "Â·"),
+    # Delta V and broken quotes
+    ("I\"V (mV)", "dV (mV)"),
+    ("ÃŽâ€V", "dV"),
+    # Broken lastSample builder fragments
+    (" \"  ?\" Vmin=\"", " - Vmin=\""),
+    (" \"I\"V=\"", " \"dV=\""),
+    (":\" ?\"\"", ":\"--\""),
+    (":\" ?\"", ":\"--\""),
+    ("A C", "degC"),
+    # Broken return placeholder
+    ("return \"Ã¢â‚¬â€\";", "return \"--\";"),
+    ("return \" ?\"\";", "return \"--\";"),
+    # Misc
+    ("Open dashboard Ã¢â€ â€™", "Open dashboard ->"),
+    ("Type command and press EnterÃ¢â‚¬Â¦", "Type command and press Enter..."),
+    ("(disconnected Ã¢â‚¬â€ retryingÃ¢â‚¬Â¦)", "(disconnected; retrying...)"),
+    ("(error Ã¢â‚¬â€ retryingÃ¢â‚¬Â¦)", "(error; retrying...)"),
+    # Regex fragment for ISO Ohms
+    ("M(?:Ohm|Ic)", "M(?:Ohm|O)"),
+    ("ÃŽÂ©", "O"),
+    # Event arrows
+    ("OP_STATE Ã¢â€ â€™", "OP_STATE ->"),
+    (" Ã¢â€ â€™ ", " -> "),
+  ]
+  for a,b in repl:
+    s = s.replace(a,b)
+  # As a safety net, replace the entire lastSample builder block with a safe ASCII-only version
+  try:
+    s = re.sub(
+      r"try\s*\{\s*lastSampleEl\.textContent[\s\S]*?\}\s*catch\(e\)\s*\{\s*\}",
+      (
+        'try { '
+        'lastSampleEl.textContent = "Last sample @ " + new Date().toLocaleTimeString() + '
+        '" - Vmin=" + (latest.vmin!=null? Number(latest.vmin).toFixed(3):"--") + "V, " + '
+        '"Vmax=" + (latest.vmax!=null? Number(latest.vmax).toFixed(3):"--") + "V, " + '
+        '"dV=" + (dvv_mV!=null? Math.round(dvv_mV):"--") + " mV, " + '
+        '"I=" + (latest.curr!=null? Math.round(latest.curr*100)/100:"--") + "A, " + '
+        '"SOC=" + (latest.soc!=null? Math.round(latest.soc):"--") + "%, " + '
+        '"T=" + (latest.temp!=null? Math.round(latest.temp*10)/10:"--") + "degC"; '
+        '} catch(e){}'
+      ),
+      s,
+      flags=re.M
+    )
+  except Exception:
+    pass
+  return s
+
+def main():
+  ap = argparse.ArgumentParser(description="Stream USB serial to phone browser on same Wi-Fi.")
+  ap.add_argument("--serial","--port",dest="port",required=False,help="Serial port (e.g., COM3 or /dev/ttyUSB0)")
+  ap.add_argument("--baud", type=int, default=250000, help="Baud rate (default 250000)")
+  ap.add_argument("--http", type=int, default=8000, help="HTTP port (default 8000)")
+  ap.add_argument("--ws", type=int, default=8765, help="WebSocket port (default 8765)")
+  ap.add_argument("--host", default="0.0.0.0", help="Bind host (default 0.0.0.0)")
+  ap.add_argument("--read-only", action="store_true", help="Disable sending commands from browser")
+  ap.add_argument("--backlog-chars", type=int, default=800_000, help="Replay history size (chars)")
+  args = ap.parse_args()
+
+  ser = None
+  if args.port:
+    try:
+      # Use a small timeout to avoid busy-spinning when no serial data
+      ser = serial.Serial(args.port, args.baud, timeout=0.05)
+    except Exception as e:
+      print(f"[!] Failed to open serial {args.port} @ {args.baud}: {e}")
+      print(list_ports_hint())
+      # Continue running; allow selection via UI
+
+  out_q: "queue.Queue[str]" = queue.Queue()
+  reader_stop_evt = None
+  reader_thread = None
+  if ser is not None:
+    reader_stop_evt = threading.Event()
+    reader_thread = threading.Thread(target=serial_reader, args=(ser,out_q,reader_stop_evt), daemon=True)
+    reader_thread.start()
+
+  viewer = sanitize_html(HTML_VIEWER.replace("__WS_PORT__", str(args.ws)).replace("__VERSION__", VERSION)
+            .replace("__SENDBAR_STYLE__", ("style='display:none'" if args.read_only else ""))).encode("utf-8")
+  dash = sanitize_html(DASHBOARD_HTML.replace("__VERSION__", VERSION)
+           .replace("__WS_PORT__", str(args.ws))).encode("utf-8")
+  sd = sanitize_html(SD_ANALYZER_HTML.replace("__VERSION__", VERSION)).encode("utf-8")
+
+  # Shared state and serial switcher
+  state = {"serial":ser, "out_q":out_q, "clients":set(), "clients_lock":threading.Lock(), "read_only":bool(args.read_only),
+           "backlog":deque(), "backlog_size":0, "backlog_limit":int(getattr(args,"backlog_chars",800_000)),
+           "reader_stop": reader_stop_evt, "reader_thread": reader_thread}
+
+  def switch_serial(port, baud):
+    # Returns (ok, message, current)
+    try:
+      if not port:
+        return False, "Missing 'port'", {"port": getattr(state.get("serial"), 'port', None), "baud": getattr(state.get("serial"), 'baudrate', None), "is_open": bool(getattr(state.get("serial"), 'is_open', False))}
+      if baud is None:
+        baud = int(getattr(args, 'baud', 250000) or 250000)
+    except Exception:
+      baud = 250000
+    # Try open new serial first
+    try:
+      new_ser = serial.Serial(port, baud, timeout=0.05)
+    except Exception as e:
+      return False, f"Failed to open {port} @ {baud}: {e}", {"port": getattr(state.get("serial"), 'port', None), "baud": getattr(state.get("serial"), 'baudrate', None), "is_open": bool(getattr(state.get("serial"), 'is_open', False))}
+    # Stop previous reader
+    try:
+      if state.get("reader_stop"):
+        try: state["reader_stop"].set()
+        except Exception: pass
+      if state.get("reader_thread"):
+        try: state["reader_thread"].join(timeout=0.3)
+        except Exception: pass
+    except Exception:
+      pass
+    # Close previous serial
+    try:
+      old = state.get("serial")
+      if old and getattr(old, 'is_open', False):
+        try: old.close()
+        except Exception: pass
+    except Exception:
+      pass
+    # Install new serial and start reader
+    state["serial"] = new_ser
+    stop_evt = threading.Event()
+    th = threading.Thread(target=serial_reader, args=(new_ser, out_q, stop_evt), daemon=True)
+    th.start()
+    state["reader_stop"] = stop_evt
+    state["reader_thread"] = th
+    # Inform clients
+    try:
+      out_q.put(f"\n[Serial switched to: {new_ser.port} @ {new_ser.baudrate}]\n")
+    except Exception:
+      pass
+    return True, "ok", {"port": new_ser.port, "baud": new_ser.baudrate, "is_open": bool(getattr(new_ser, 'is_open', False))}
+
+  httpd = HTTPServer((args.host, args.http), make_http_handler(viewer, dash, sd, state, switch_serial))
+  threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+  ip = get_laptop_ip()
+  print(f"\n=== BMS Viewer (offline charts, {VERSION}) ===")
+  print("Build:", BUILD_STAMP)
+  print(f"Logs page:            http://{ip}:{args.http}/")
+  print(f"Dashboard page:       http://{ip}:{args.http}/dash")
+  print(f"SD Analyzer:          http://{ip}:{args.http}/sd")
+  print(f"WebSocket endpoint:   ws://{ip}:{args.ws}")
+  if state.get("serial") and getattr(state["serial"], 'is_open', False):
+    print(f"Serial:               {state['serial'].port} @ {state['serial'].baudrate}")
+  else:
+    print("Serial:               (not connected) - choose a port in the UI")
+  print("Press Ctrl+C to stop.\n")
+
+  def handle_sigint(signum, frame): raise KeyboardInterrupt()
+  try: signal.signal(signal.SIGINT, handle_sigint)
+  except Exception: pass
+
+  # state already created above
+
+  async def run_async():
+    async def ws_handler(ws):
+      added = False
+      try:
+        # Send initial backlog in manageable chunks before joining fanout
+        initial = backlog_dump(state)
+        if initial:
+          try:
+            chunk_sz = 32_768
+            for i in range(0, len(initial), chunk_sz):
+              await ws.send(initial[i:i+chunk_sz])
+          except Exception:
+            pass
+        try:
+          await ws.send("-- Connected to BMS viewer --\\n")
+        except Exception:
+          pass
+        # Now join broadcast set
+        with state["clients_lock"]:
+          state["clients"].add(ws)
+          added = True
+        if state["read_only"]:
+          await asyncio.Future()
+        else:
+          async for msg in ws:
+            try:
+              s = state["serial"]
+              if s and s.is_open:
+                s.write(msg.encode("utf-8", errors="replace"))
+            except Exception:
+              pass
+      finally:
+        if added:
+          with state["clients_lock"]:
+            state["clients"].discard(ws)
+
+    fan = asyncio.create_task(fanout_task(state))
+    async with websockets.serve(ws_handler, args.host, args.ws, max_size=None, ping_interval=20, ping_timeout=20):
+      try: await asyncio.Future()
+      finally:
+        fan.cancel()
+        try: await fan
+        except Exception: pass
+
+  try:
+    asyncio.run(run_async())
+  except KeyboardInterrupt:
+    pass
+  finally:
+    try:
+      if state.get("reader_stop"): state["reader_stop"].set()
+    except Exception:
+      pass
+    try:
+      if state.get("serial"): state["serial"].close()
+    except Exception: pass
+    try: httpd.shutdown()
+    except Exception: pass
+
+if __name__ == "__main__":
+  main()
+

@@ -1,0 +1,41 @@
+#ifndef __BALANCING_TUNING__H_
+#define __BALANCING_TUNING__H_
+
+#include <cstdint>
+
+namespace BalancingArgs
+{
+constexpr int32_t MAX_CHARGE_CURRENT_MA = 1000; // do not balance if |charge current| > 1A (reduced from 2A)
+constexpr int32_t THROTTLE_CURRENT_MA = 500;    // throttle charge to 0.5A during balancing
+constexpr int32_t IDLE_ABS_CURRENT_MA = 100;    // max |current| to consider pack truly idle
+constexpr uint32_t IDLE_HOLD_MS = 30u * 1000u;  // minimum idle dwell before allowing balance //5u * 60u * 1000u;
+constexpr int32_t CHARGE_THRESH_MA = -50;       // current threshold (neg) to treat as charging
+constexpr int16_t THROTTLE_X10MA = 0; // 0 -> stop charging
+constexpr uint16_t DV_START_MV = 45;            // enter balancing when dv exceeds this
+constexpr uint16_t DV_STOP_MV = 30;             // exit balancing when dv falls below this
+constexpr uint16_t PACK_MISMATCH_ENTRY_MV = 320; // dv to trigger charge clamp/lock-in
+constexpr uint16_t PACK_MISMATCH_EXIT_MV = 50;   // was 180 - keep throttle until dV is low
+
+constexpr uint16_t WINDOW_MIN_MV = 10;          // lowest window to qualify top cells
+constexpr uint16_t WINDOW_MAX_MV = 50;          // widest window when dv is high
+constexpr uint16_t WINDOW_HIGH_DV_MV = 200;     // dv that drives window to max
+
+constexpr uint16_t MAX_ACTIVE_CELLS_PER_DEV = 8; // per-device simultaneous bleeders
+constexpr bool NO_ADJACENT_CELLS = true; // align with DEV_CONF[NO_ADJ_CB]
+
+constexpr uint32_t DV_TREND_OBS_MS = 3u * 60u * 1000u; // window to watch dv growth while charging
+constexpr uint32_t DV_RECOVERY_HOLD_MS = 2u * 60u * 1000u; // hold time before unlocking dv clamp
+constexpr uint32_t DV_STOP_HOLD_MS = 60u * 1000u; // time dv must stay below stop threshold
+constexpr uint16_t DV_UNLOCK_MV = 180;           // dv below which discharge can clear clamp
+constexpr uint16_t DV_TREND_INC_MIN_MV = 15;     // dv increase over obs window to trigger lock
+constexpr int32_t CHG_ACTIVE_MA = -200;          // current (neg) considered "active charge" for dv lock
+constexpr uint32_t REENFORCE_MS = 2000u;         // how often to re-send clamp while locked
+
+constexpr int32_t THERMAL_PAUSE_MC = 105000;  // 105C
+constexpr int32_t THERMAL_RESUME_MC = 95000;  // 95C
+
+constexpr uint16_t BLEED_MA_75C = 240;          // target bleed current per cell at 75C (mA)
+constexpr int32_t BLEED_DERATE_MA_PER_C = 2;    // mA reduction per °C above 75C
+} // namespace BalancingArgs
+
+#endif // __BALANCING_TUNING__H_

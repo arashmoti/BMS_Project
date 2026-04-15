@@ -1,0 +1,15 @@
+{
+    "cmake.sourceDirectory": "D:/BMS_Project/ep-main-fw_test/mbed-os",
+    "files.associations": {
+        "mstd_atomic": "cpp",
+        "mstd_cstddef": "cpp",
+        "mstd_functional": "cpp",
+        "mstd_iterator": "cpp",
+        "mstd_memory": "cpp",
+        "mstd_mutex": "cpp",
+        "mstd_new": "cpp",
+        "mstd_tuple": "cpp",
+        "mstd_type_traits": "cpp",
+        "mstd_utility": "cpp"
+    }
+}

@@ -1,0 +1,29 @@
+Altium Designer Pick and Place Locations
+C:\Users\Public\Documents\Altium\Connector_Board\Project Outputs for Connector_Board\Pick Place for Connector_Board.txt
+
+========================================================================================================================
+File Design Information:
+
+Date:       26.08.24
+Time:       09:34
+Revision:   83f0c2a807c6a3193ea92da779a2383c482659a1
+Variant:    No variations
+Units used: mil
+
+Designator Comment         Layer    Footprint       Center-X(mil) Center-Y(mil) Rotation Description                                                                                     
+F2         "THT Fuse Clip" TopLayer VF-700          2070.866      1202.756      90       "High Current THT Fuse Clip"                                                                    
+F1         "THT Fuse Clip" TopLayer VF-700          1058.071      1202.756      90       "High Current THT Fuse Clip"                                                                    
+FD2        FID1X2R         TopLayer FID1X2R         145.669       1582.677      90       "Fiducial - Round 1x2mm"                                                                        
+FD1        FID1X2R         TopLayer FID1X2R         133.858       389.764       0        "Fiducial - Round 1x2mm"                                                                        
+ST4        PTH-M3D6X6      TopLayer PTH-3M2D6X6     2224.409      137.795       0        "M3 PTH (3.2mm), 6mm pad"                                                                       
+ST3        PTH-M3D6X6      TopLayer PTH-3M2D6X6     2224.409      1830.709      0        "M3 PTH (3.2mm), 6mm pad"                                                                       
+ST2        PTH-M3D6X6      TopLayer PTH-3M2D6X6     137.795       137.795       0        "M3 PTH (3.2mm), 6mm pad"                                                                       
+ST1        PTH-M3D6X6      TopLayer PTH-3M2D6X6     137.795       1830.709      0        "M3 PTH (3.2mm), 6mm pad"                                                                       
+K1         ALQ124          TopLayer FP-ALQ124-MFG   850.394       1736.220      180      "RELAY GEN PURPOSE SPDT 10A 24V"                                                                
+J2         282837-2        TopLayer 2828372         1619.685      1767.716      0        Connector                                                                                       
+J1         YO0821500000G   TopLayer YO0821500000G   1092.520      196.850       180      Connector                                                                                       
+C1         B32529C0104J289 TopLayer B32529C0104J289 1255.630      492.165       180      Capacitor                                                                                       
+R3         33K             TopLayer Axial_0.4       1254.354      602.165       180      "Fixed Resistor, Metal Film, 0.25W, 33000ohm, 250V, 0.1% +/-Tol, 25ppm/Cel, Through Hole Mount" 
+R2         1.5M            TopLayer Axial_0.4       1254.354      702.165       0        "Fixed Resistor, Metal Film, 0.25W, 1500000ohm, 250V, 1% +/-Tol, -50,50ppm/Cel"                 
+R1         1.5M            TopLayer Axial_0.4       1254.071      880.874       180      "Fixed Resistor, Metal Film, 0.25W, 1500000ohm, 250V, 1% +/-Tol, -50,50ppm/Cel"                 
+P1         662010231722    TopLayer 662010231722    389.764       984.252       270      ""                                                                                              

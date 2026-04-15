@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en" class="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <title>BMS Logs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: { gray: { 850: '#1a202c', 950: '#0d1117' } }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Custom Scrollbar */
+    .scrollbar-thin::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background-color: #94a3b8;
+      border-radius: 4px;
+    }
+
+    .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+      background-color: #334155;
+    }
+
+    .scrollbar-thin::-webkit-scrollbar-track {
+      background: transparent;
+    }
+  </style>
+</head>
+
+<body
+  class="flex flex-col h-screen overflow-hidden text-sm bg-gray-50 dark:bg-gray-950 text-slate-800 dark:text-slate-300 transition-colors duration-300">
+
+  <!-- Header -->
+  <header
+    class="sticky top-0 z-50 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-slate-200 dark:border-gray-800 p-2 flex items-center justify-between shrink-0 shadow-sm transition-colors duration-300">
+
+    <!-- Left: Identity -->
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" id="dot"></span>
+        <h1 class="font-bold text-slate-900 dark:text-slate-100 tracking-tight uppercase">BMS Terminal</h1>
+      </div>
+    </div>
+
+    <!-- Center: Port Controls -->
+    <div class="flex items-center gap-2 text-xs">
+      <div
+        class="flex items-center gap-1 bg-slate-100 dark:bg-gray-800 p-1 rounded-md border border-slate-200 dark:border-gray-700">
+        <button id="btnFetchPorts"
+          class="px-2 py-1 hover:bg-slate-200 dark:hover:bg-gray-700 rounded text-slate-500 transition-colors"
+          title="Refresh">↻</button>
+        <select id="portSel"
+          class="bg-transparent border-none text-slate-700 dark:text-slate-200 px-1 py-0.5 outline-none font-mono min-w-[80px] cursor-pointer"></select>
+        <div class="w-px h-4 bg-slate-300 dark:bg-gray-600 mx-1"></div>
+        <select id="baudSel"
+          class="bg-transparent border-none text-slate-700 dark:text-slate-200 px-1 py-0.5 outline-none font-mono cursor-pointer">
+          <option value="9600">9600</option>
+          <option value="115200">115200</option>
+          <option value="250000" selected>250k</option>
+          <option value="500000">500k</option>
+          <option value="1000000">1M</option>
+        </select>
+        <button id="btnSwitch"
+          class="ml-1 px-3 py-0.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded shadow-sm transition-colors">Open</button>
+      </div>
+
+      <div class="h-5 w-px bg-slate-200 dark:bg-gray-700 mx-2"></div>
+
+      <!-- Theme Toggle -->
+      <button id="toggleTheme"
+        class="p-1.5 rounded-md text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors border border-transparent hover:border-slate-200 dark:hover:border-gray-700">
+        <svg id="iconSun" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z">
+          </path>
+        </svg>
+        <svg id="iconMoon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Right: Links -->
+    <div class="flex gap-3 text-xs font-semibold">
+      <a href="/dash"
+        class="text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-1">
+        Dashboard <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </a>
+      <a href="/sd"
+        class="text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-1">
+        SD Card <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- Terminal Output -->
+  <div id="logArea"
+    class="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5 scrollbar-thin select-text bg-white dark:bg-gray-950 transition-colors">
+    <div class="text-slate-400 dark:text-slate-600 italic">-- Terminal Ready --</div>
+  </div>
+
+  <!-- Controls & Input -->
+  <footer
+    class="bg-gray-50 dark:bg-gray-900 border-t border-slate-200 dark:border-gray-800 p-3 shrink-0 transition-colors">
+    <div class="flex gap-3 mb-2 items-center text-xs text-slate-500 dark:text-slate-500">
+      <label
+        class="flex items-center gap-1.5 cursor-pointer hover:text-slate-800 dark:hover:text-slate-300 transition-colors">
+        <input type="checkbox" id="chkAutoScroll" checked
+          class="rounded border-slate-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-blue-500 focus:ring-0">
+        <span>Auto-scroll</span>
+      </label>
+      <button id="btnClear" class="hover:text-red-500 transition-colors">Clear Output</button>
+      <div class="flex-1"></div>
+      <span id="socketStatus" class="opacity-50">Disconnected</span>
+    </div>
+
+    <div class="relative">
+      <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+        <span class="text-blue-500 font-bold">></span>
+      </div>
+      <input id="cmdInput" type="text"
+        class="block w-full pl-8 pr-20 py-2.5 bg-white dark:bg-gray-950 border border-slate-300 dark:border-gray-700 rounded-lg text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-600 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm shadow-sm transition-colors"
+        placeholder="Send command..." autocomplete="off">
+      <div class="absolute inset-y-0 right-0 flex items-center pr-2">
+        <kbd
+          class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-slate-500 border border-slate-200 dark:border-gray-700 rounded bg-slate-100 dark:bg-gray-800 transition-colors">Enter</kbd>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // === Theme Logic ===
+    const themeBtn = document.getElementById('toggleTheme');
+    const sunIcon = document.getElementById('iconSun');
+    const moonIcon = document.getElementById('iconMoon');
+
+    function initTheme() {
+      if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+        sunIcon.classList.remove('hidden'); moonIcon.classList.add('hidden');
+      } else {
+        document.documentElement.classList.remove('dark');
+        sunIcon.classList.add('hidden'); moonIcon.classList.remove('hidden');
+      }
+    }
+
+    themeBtn.addEventListener('click', () => {
+      if (document.documentElement.classList.contains('dark')) {
+        document.documentElement.classList.remove('dark');
+        localStorage.setItem('color-theme', 'light');
+        sunIcon.classList.add('hidden'); moonIcon.classList.remove('hidden');
+      } else {
+        document.documentElement.classList.add('dark');
+        localStorage.setItem('color-theme', 'dark');
+        sunIcon.classList.remove('hidden'); moonIcon.classList.add('hidden');
+      }
+    });
+    initTheme();
+
+    // === App Logic ===
+    const els = {
+      log: document.getElementById('logArea'),
+      input: document.getElementById('cmdInput'),
+      dot: document.getElementById('dot'),
+      stat: document.getElementById('socketStatus'),
+      scr: document.getElementById('chkAutoScroll'),
+      clr: document.getElementById('btnClear'),
+      selP: document.getElementById('portSel'),
+      selB: document.getElementById('baudSel'),
+      btnSw: document.getElementById('btnSwitch'),
+      btnFetch: document.getElementById('btnFetchPorts')
+    };
+
+    const LOG_KEY = 'bms_term_hist';
+    try {
+      const saved = localStorage.getItem(LOG_KEY);
+      if (saved) els.log.innerHTML = saved;
+    } catch (e) { }
+
+    let ws;
+    const WS_PORT = Number("__WS_PORT__") || 8765;
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const h = localStorage.getItem('bms_host') || location.hostname;
+      // const p = localStorage.getItem('bms_ws_port') || WS_PORT; // Use default for now for simpler setup
+
+      if (ws) ws.close();
+      els.stat.textContent = 'Connecting...';
+      els.dot.className = "w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse";
+
+      ws = new WebSocket(`${proto}://${h}:${WS_PORT}`);
+      ws.onopen = () => {
+        els.stat.textContent = 'Connected';
+        els.dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
+        addLog("[System] WebSocket connected\n", "text-emerald-600 dark:text-emerald-500");
+      };
+      ws.onclose = () => {
+        els.stat.textContent = 'Disconnected';
+        els.dot.className = "w-2.5 h-2.5 rounded-full bg-red-500";
+        setTimeout(connect, 2000);
+      };
+      ws.onmessage = e => {
+        addLog(e.data);
+      };
+    }
+
+    function addLog(text, colorClass) {
+      text = String(text);
+      const isScrolled = (els.log.scrollTop + els.log.clientHeight >= els.log.scrollHeight - 50);
+
+      // Colorize common BMS lines
+      let cls = colorClass || "text-slate-700 dark:text-slate-300";
+      if (!cls) { // Auto-detect
+        if (text.includes("[ERR]") || text.includes("Error:") || text.includes("FAULT")) cls = "text-red-600 dark:text-red-400 font-bold";
+        else if (text.includes("[WARN]")) cls = "text-amber-600 dark:text-amber-400";
+        else if (text.includes("[INF]") || text.includes("[INFO]")) cls = "text-blue-600 dark:text-blue-300";
+        else if (text.startsWith(">")) cls = "text-emerald-600 dark:text-emerald-400 font-bold";
+      }
+
+      const span = document.createElement('span');
+      span.className = `${cls} block break-words border-l-2 border-transparent hover:border-slate-300 hover:dark:border-slate-700 hover:bg-slate-100 hover:dark:bg-slate-900 pl-1 -ml-1 transition-colors`;
+      span.textContent = text.replace(/\\r/g, '');
+      els.log.appendChild(span);
+
+      // Limit history
+      if (els.log.childElementCount > 2000) els.log.removeChild(els.log.firstChild);
+
+      if (els.scr.checked && isScrolled) {
+        els.log.scrollTop = els.log.scrollHeight;
+      }
+    }
+
+    els.input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const txt = els.input.value;
+        if (txt && ws) {
+          ws.send(txt + '\n');
+          els.input.value = '';
+          addLog(`> ${txt}\n`, "text-slate-500 dark:text-slate-500");
+        }
+      }
+    });
+
+    els.clr.addEventListener('click', () => {
+      els.log.innerHTML = '';
+      localStorage.removeItem(LOG_KEY);
+    });
+
+    // Port Management logic
+    async function fetchPorts() {
+      try {
+        const res = await fetch('/api/serial/ports');
+        const data = await res.json();
+        els.selP.innerHTML = '';
+        data.ports.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.device;
+          opt.textContent = p.device;
+          if (p.description) opt.title = p.description;
+          els.selP.appendChild(opt);
+        });
+        if (data.ports.length === 0) {
+          const opt = document.createElement('option'); opt.textContent = "No ports"; els.selP.appendChild(opt);
+        }
+      } catch (e) { }
+    }
+
+    async function updateStatus() {
+      try {
+        const res = await fetch('/api/serial/status');
+        const d = await res.json();
+        if (d.is_open) {
+          els.btnSw.textContent = "Close";
+          els.btnSw.classList.replace("bg-blue-600", "bg-red-600");
+        } else {
+          els.btnSw.textContent = "Open";
+          els.btnSw.classList.replace("bg-red-600", "bg-blue-600");
+        }
+        if (d.port && els.selP.options.length > 0) {
+          els.selP.value = d.port;
+        }
+        if (d.baud) els.selB.value = d.baud;
+      } catch (e) { }
+    }
+
+    els.btnFetch.addEventListener('click', fetchPorts);
+    els.btnSw.addEventListener('click', async () => {
+      if (els.btnSw.textContent === "Close") {
+        await fetch('/api/serial/select?port=');
+      } else {
+        const p = els.selP.value;
+        const b = els.selB.value;
+        if (!p || p === "No ports") return;
+        await fetch(`/api/serial/select?port=${encodeURIComponent(p)}&baud=${b}`);
+      }
+      setTimeout(updateStatus, 500);
+    });
+
+    // Start
+    connect();
+    fetchPorts();
+    updateStatus();
+
+  </script>
+</body>
+
+</html>

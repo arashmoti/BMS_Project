@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en" class="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <title>BMS SD Analyzer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            gray: { 750: '#2d3748', 850: '#1a202c', 950: '#0d1117' },
+            bms: { green: '#10b981', red: '#ef4444', blue: '#3b82f6' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Custom Scrollbar */
+    .scrollbar-thin::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    .scrollbar-thin::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background-color: #94a3b8;
+      border-radius: 3px;
+    }
+
+    .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+      background-color: #4b5563;
+    }
+  </style>
+</head>
+
+<body
+  class="bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 antialiased min-h-screen flex flex-col transition-colors duration-300">
+
+  <!-- Header -->
+  <header
+    class="bg-white/80 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-700/50 p-2 flex items-center justify-between sticky top-0 z-50 backdrop-blur shadow-sm transition-colors duration-300">
+    <div class="flex items-center gap-4 text-sm">
+      <h1 class="font-bold text-slate-900 dark:text-white tracking-tight flex items-center gap-2 uppercase">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-600 dark:text-purple-500" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
+          <rect x="9" y="9" width="6" height="6" />
+          <line x1="9" y1="1" x2="9" y2="4" />
+          <line x1="15" y1="1" x2="15" y2="4" />
+          <line x1="9" y1="20" x2="9" y2="23" />
+          <line x1="15" y1="20" x2="15" y2="23" />
+          <line x1="20" y1="9" x2="23" y2="9" />
+          <line x1="20" y1="14" x2="23" y2="14" />
+          <line x1="1" y1="9" x2="4" y2="9" />
+          <line x1="1" y1="14" x2="4" y2="14" />
+        </svg>
+        SD Log Analyzer
+      </h1>
+    </div>
+
+    <div class="flex items-center gap-2 text-xs">
+      <label
+        class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded font-medium cursor-pointer transition-colors shadow-sm">
+        Load CSV / LOG
+        <input type="file" id="fileIn" class="hidden" accept=".csv,.txt,.log">
+      </label>
+      <div id="fileMeta" class="text-slate-500 dark:text-slate-400 max-w-[150px] truncate">No file loaded</div>
+
+      <div class="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
+
+      <!-- Theme Toggle -->
+      <button id="toggleTheme"
+        class="p-1.5 rounded-md text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors border border-transparent hover:border-slate-200 dark:hover:border-slate-700">
+        <svg id="iconSun" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z">
+          </path>
+        </svg>
+        <svg id="iconMoon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div class="flex items-center gap-3 text-xs font-semibold">
+      <a href="/dash"
+        class="text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-1">
+        Dashboard <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </a>
+      <a href="/"
+        class="text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-white transition-colors flex items-center gap-1">
+        Terminal <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- Main Drop Zone & Content -->
+  <main id="dropZone" class="flex-1 p-4 lg:p-6 flex flex-col gap-6 relative transition-colors">
+
+    <!-- Overlay for DragDrop -->
+    <div id="dropOverlay"
+      class="absolute inset-0 bg-blue-500/10 border-4 border-blue-500/50 border-dashed z-50 hidden flex items-center justify-center backdrop-blur-sm rounded-xl m-4 pointer-events-none">
+      <div
+        class="text-2xl font-bold text-blue-600 dark:text-blue-400 bg-white/90 dark:bg-slate-900/90 px-8 py-4 rounded-xl shadow-lg">
+        Drop Log File Here</div>
+    </div>
+
+    <!-- Summary Stats Cards -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div
+        class="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 shadow-sm transition-colors">
+        <div class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold">Samples</div>
+        <div class="text-xl font-mono text-slate-800 dark:text-slate-200" id="stSamples">0</div>
+      </div>
+      <div
+        class="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 shadow-sm transition-colors">
+        <div class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold">Duration</div>
+        <div class="text-xl font-mono text-slate-800 dark:text-slate-200" id="stDur">--:--</div>
+      </div>
+      <div
+        class="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 shadow-sm transition-colors">
+        <div class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold">V Range</div>
+        <div class="text-sm font-mono text-slate-600 dark:text-slate-300"><span class="text-blue-500 dark:text-blue-400"
+            id="stVmin">--</span> / <span class="text-red-500 dark:text-red-400" id="stVmax">--</span></div>
+      </div>
+      <div
+        class="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 shadow-sm transition-colors">
+        <div class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold">Current Range</div>
+        <div class="text-sm font-mono text-slate-600 dark:text-slate-300"><span
+            class="text-emerald-500 dark:text-emerald-400" id="stCmin">--</span> / <span
+            class="text-emerald-500 dark:text-emerald-400" id="stCmax">--</span></div>
+      </div>
+      <div
+        class="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 shadow-sm transition-colors">
+        <div class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold">Temp Range</div>
+        <div class="text-sm font-mono text-slate-600 dark:text-slate-300"><span
+            class="text-amber-500 dark:text-amber-400" id="stTmin">--</span> / <span
+            class="text-amber-500 dark:text-amber-400" id="stTmax">--</span></div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="space-y-4">
+      <div
+        class="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700/50 h-72 flex flex-col shadow-sm transition-colors">
+        <div class="flex justify-between mb-2">
+          <h3 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">Voltages</h3>
+          <div class="text-xs text-slate-500" id="hoverInfoV">--</div>
+        </div>
+        <div class="flex-1 relative w-full h-full">
+          <canvas id="chartVolt"></canvas>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 h-64">
+        <div
+          class="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700/50 flex flex-col shadow-sm transition-colors">
+          <h3 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase mb-2">Current</h3>
+          <div class="flex-1 relative w-full h-full">
+            <canvas id="chartCurr"></canvas>
+          </div>
+        </div>
+        <div
+          class="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700/50 flex flex-col shadow-sm transition-colors">
+          <h3 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase mb-2">Temp & SOC</h3>
+          <div class="flex-1 relative w-full h-full">
+            <canvas id="chartMisc"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analysis / Registry -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-64">
+      <div
+        class="col-span-1 lg:col-span-2 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700/50 flex flex-col shadow-sm transition-colors">
+        <div
+          class="p-3 border-b border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/50 rounded-t-xl transition-colors">
+          <h3 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">System Events</h3>
+        </div>
+        <div class="flex-1 overflow-y-auto p-2 font-mono text-xs space-y-1 scrollbar-thin" id="listEvents">
+          <!-- Events -->
+        </div>
+      </div>
+
+      <div
+        class="col-span-1 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700/50 flex flex-col shadow-sm transition-colors">
+        <div
+          class="p-3 border-b border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/50 rounded-t-xl transition-colors">
+          <h3 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">Stats</h3>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3 text-xs space-y-2 text-slate-600 dark:text-slate-300" id="txtStats">
+        </div>
+      </div>
+    </div>
+
+    <div
+      class="bg-slate-100 dark:bg-slate-900/50 text-center text-[10px] text-slate-500 dark:text-slate-600 pb-4 rounded-lg">
+      Drag & Drop file anywhere to load • Supports standard BMS CSV headers
+    </div>
+
+  </main>
+
+  <script>
+    // === Theme Logic ===
+    const themeBtn = document.getElementById('toggleTheme');
+    const sunIcon = document.getElementById('iconSun');
+    const moonIcon = document.getElementById('iconMoon');
+
+    function initTheme() {
+      if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+        sunIcon.classList.remove('hidden'); moonIcon.classList.add('hidden');
+      } else {
+        document.documentElement.classList.remove('dark');
+        sunIcon.classList.add('hidden'); moonIcon.classList.remove('hidden');
+      }
+      updateChartTheme();
+    }
+
+    themeBtn.addEventListener('click', () => {
+      if (document.documentElement.classList.contains('dark')) {
+        document.documentElement.classList.remove('dark');
+        localStorage.setItem('color-theme', 'light');
+        sunIcon.classList.add('hidden'); moonIcon.classList.remove('hidden');
+      } else {
+        document.documentElement.classList.add('dark');
+        localStorage.setItem('color-theme', 'dark');
+        sunIcon.classList.remove('hidden'); moonIcon.classList.add('hidden');
+      }
+      updateChartTheme();
+    });
+
+    // === Setup Chart.js ===
+    Chart.defaults.font.family = "'Inter', sans-serif";
+
+    function updateChartTheme() {
+      const isDark = document.documentElement.classList.contains('dark');
+      const textColor = isDark ? '#94a3b8' : '#64748b';
+      const gridColor = isDark ? '#334155' : '#e2e8f0';
+      const tooltipBg = isDark ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+      const tooltipText = isDark ? '#e2e8f0' : '#1e293b';
+
+      [cVolt, cCurr, cMisc].forEach(chart => {
+        if (!chart) return;
+        chart.defaults.color = textColor;
+        chart.defaults.borderColor = gridColor;
+        chart.options.scales.y.ticks.color = textColor;
+        if (chart.options.scales.x) chart.options.scales.x.display = false; // keep X hidden as per design
+
+        chart.options.plugins.tooltip.backgroundColor = tooltipBg;
+        chart.options.plugins.tooltip.titleColor = tooltipText;
+        chart.options.plugins.tooltip.bodyColor = tooltipText;
+        chart.options.plugins.tooltip.borderColor = gridColor;
+
+        chart.update('none');
+      });
+    }
+
+
+    const commonOpts = {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { enabled: true } },
+      scales: { x: { display: false }, y: { display: true, position: 'right' } },
+      elements: { point: { radius: 0, hoverRadius: 4 }, line: { borderWidth: 1.5, tension: 0.1 } }
+    };
+
+    const cVolt = new Chart(document.getElementById('chartVolt'), {
+      type: 'line', data: { labels: [], datasets: [{ label: 'mx', data: [], borderColor: '#ef4444' }, { label: 'mn', data: [], borderColor: '#3b82f6' }] },
+      options: commonOpts
+    });
+    const cCurr = new Chart(document.getElementById('chartCurr'), {
+      type: 'line', data: { labels: [], datasets: [{ label: 'I', data: [], borderColor: '#10b981', fill: true, backgroundColor: 'rgba(16,185,129,0.1)' }] },
+      options: commonOpts
+    });
+    const cMisc = new Chart(document.getElementById('chartMisc'), {
+      type: 'line', data: { labels: [], datasets: [{ label: 'T', data: [], borderColor: '#f59e0b', yAxisID: 'y' }, { label: 'SOC', data: [], borderColor: '#a855f7', yAxisID: 'y2' }] },
+      options: { ...commonOpts, scales: { ...commonOpts.scales, y2: { display: true, position: 'left', min: 0, max: 100 } } }
+    });
+
+    // === Logic ===
+    const els = {
+      drop: document.getElementById('dropZone'),
+      overlay: document.getElementById('dropOverlay'),
+      in: document.getElementById('fileIn'),
+      meta: document.getElementById('fileMeta'),
+      ls: document.getElementById('listEvents'),
+      st: { n: document.getElementById('stSamples'), d: document.getElementById('stDur'), vn: document.getElementById('stVmin'), vx: document.getElementById('stVmax') }
+    };
+
+    // Drag Drop
+    window.addEventListener('dragover', e => { e.preventDefault(); els.overlay.classList.remove('hidden'); });
+    window.addEventListener('dragleave', e => { if (e.target === els.overlay) els.overlay.classList.add('hidden'); });
+    window.addEventListener('drop', e => {
+      e.preventDefault(); els.overlay.classList.add('hidden');
+      if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+    });
+    els.in.addEventListener('change', e => { if (e.target.files.length) loadFile(e.target.files[0]); });
+
+    function loadFile(file) {
+      els.meta.textContent = file.name + ` (${Math.round(file.size / 1024)} KB)`;
+      const r = new FileReader();
+      r.onload = e => parse(e.target.result);
+      r.readAsText(file);
+    }
+
+    function parse(text) {
+      const lines = text.split('\\n');
+      const samples = [];
+      const events = [];
+
+      // Reset
+      els.ls.innerHTML = '';
+
+      // Headers check (optional, for now assumed standard CSV or LOG format)
+      // Indices: 0=Time, 1=OpState, 2=Current, 3=Temp, 4=Vmax, 5=Vmin, 6=SOC
+      // Simple heuristic parser
+
+      let t0 = null;
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        // try csv
+        if (line.includes(',') && /^[0-9\\-.,: ]+$/.test(line)) {
+          const p = line.split(',').map(s => parseFloat(s));
+          if (p.length >= 6) {
+            const curr = findKey(line, ["curr", "i", "iavg"]);
+            const vx = findKey(line, ["vmax", "maxv"]);
+            const vn = findKey(line, ["vmin", "minv"]);
+            if (vx && vn) {
+              samples.push({ i: curr || 0, vx, vn, t: samples.length, temp: findKey(line, ["temp"]) || 25, soc: findKey(line, ["soc"]) || 0 });
+            }
+          }
+        } else if (line.includes("OP_STATE")) {
+          events.push(line);
+        }
+      }
+
+      if (samples.length === 0 && lines.length > 0) {
+        // Try fallback strict CSV
+        for (const line of lines) {
+          const p = line.split(',');
+          if (p.length > 5 && !isNaN(p[2])) {
+            samples.push({
+              i: parseFloat(p[2]) / 1000,
+              temp: parseFloat(p[3]) / 10,
+              vx: parseFloat(p[4]) / 1000,
+              vn: parseFloat(p[5]) / 1000,
+              soc: parseFloat(p[6]) / 10,
+              t: samples.length
+            });
+          }
+        }
+      }
+
+      updateUI(samples, events);
+    }
+
+    function findKey(line, keys) {
+      // Simple utility similar to dashboard
+      for (const k of keys) {
+        const re = new RegExp(k + "[=:]\\s*([+\\-]?\\d+(?:\\.\\d+)?)", "i");
+        const m = line.match(re);
+        if (m) return parseFloat(m[1]);
+      }
+      return null;
+    }
+
+    function updateUI(data, events) {
+      els.st.n.textContent = data.length;
+
+      // Stats
+      if (data.length) {
+        const vxs = data.map(d => d.vx); const vns = data.map(d => d.vn);
+        const maxV = Math.max(...vxs); const minV = Math.min(...vns);
+        els.st.vx.textContent = maxV.toFixed(3) + 'V';
+        els.st.vn.textContent = minV.toFixed(3) + 'V';
+      }
+
+      // Charts
+      const idxs = data.map((_, i) => i);
+      cVolt.data.labels = idxs;
+      cVolt.data.datasets[0].data = data.map(d => d.vx);
+      cVolt.data.datasets[1].data = data.map(d => d.vn);
+      cVolt.update();
+
+      cCurr.data.labels = idxs;
+      cCurr.data.datasets[0].data = data.map(d => d.i);
+      cCurr.update();
+
+      cMisc.data.labels = idxs;
+      cMisc.data.datasets[0].data = data.map(d => d.temp);
+      cMisc.data.datasets[1].data = data.map(d => d.soc);
+      cMisc.update();
+
+      // Events
+      events.forEach(e => {
+        const d = document.createElement('div');
+        d.className = "text-slate-500 dark:text-slate-400 border-l-2 border-slate-300 dark:border-slate-600 pl-2 text-[10px]";
+        d.textContent = e;
+        els.ls.appendChild(d);
+      });
+    }
+
+    // Init
+    initTheme();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,57 @@
+{
+    "configurations": [
+        {
+            "name": "Mbed OS STM32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/mbed-os/**",
+                "${workspaceFolder}/mbed-os/platform/include",
+                "${workspaceFolder}/mbed-os/rtos/include",
+                "${workspaceFolder}/mbed-os/drivers/include",
+                "${workspaceFolder}/mbed-os/hal/include",
+                "${workspaceFolder}/mbed-os/targets/TARGET_STM/**",
+                "${workspaceFolder}/BQ79616Handler/Inc",
+                "${workspaceFolder}/Measurement/Inc",
+                "${workspaceFolder}/Configuration/Inc",
+                "${workspaceFolder}/Common",
+                "${workspaceFolder}/InterfaceCommHandler/Inc",
+                "${workspaceFolder}/SerialHandler/Inc",
+                "${workspaceFolder}/SdCardHandler/Inc",
+                "${workspaceFolder}/EepromHandler/Inc",
+                "${workspaceFolder}/ErrorHandler/Inc",
+                "${workspaceFolder}/EffectHandler/Inc",
+                "${workspaceFolder}/PowerHandler/Inc",
+                "${workspaceFolder}/PowerStateHandler/Inc",
+                "${workspaceFolder}/StateOfChargeHandler/Inc",
+                "${workspaceFolder}/Operation/Inc",
+                "${workspaceFolder}/Tasking/Inc",
+                "${workspaceFolder}/CanHandler/Inc",
+                "${workspaceFolder}/DatetimeHandler/Inc",
+                "${workspaceFolder}/Logging/Inc",
+                "${workspaceFolder}/HwMeasurementBase",
+                "${workspaceFolder}/HwOperationBase",
+                "${workspaceFolder}/HwLoggingBase",
+                "${workspaceFolder}/HwErrorBase",
+                "${workspaceFolder}/HwTaskingBase"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "MBED_CONF_PLATFORM_STDIO_BAUD_RATE=115200",
+                "MBED_HEAP_STATS_ENABLED=1",
+                "MBED_STACK_STATS_ENABLED=1",
+                "TARGET_STM32L496RG",
+                "DEVICE_SERIAL=1",
+                "DEVICE_I2C=1",
+                "DEVICE_SPI=1",
+                "DEVICE_ANALOGIN=1"
+            ],
+            "compilerPath": "",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm"
+        }
+    ],
+    "version": 4
+}
