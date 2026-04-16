@@ -1,15 +1,28 @@
+# Mbed project artifacts
 software/source_codes/.build
 software/source_codes/.mbed
 software/source_codes/projectfiles
-# *.py*
-# mbed-os
 software/source_codes/BUILD
-bms-env/
 software/source_codes/build/
-# dist/
 software/source_codes/__pycache__/
 software/source_codes/*.specbuild/
 software/source_codes/*.spec
 software/source_codes/error.txt
 software/source_codes/Deep Dive Balancing Fault Pin Asser.txt
+
+# Python virtual environments
+bms-env/
+bms-env-py311/
+.venv/
+venv/
+env/
+
+# Python artifacts
+*.py[cod]
+__pycache__/
+*.egg-info/
+pip-wheel-metadata/
+
+# Optional builds/dist
+# dist/
 
