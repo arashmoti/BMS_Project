@@ -4,17 +4,14 @@
 #include <cstdio>
 #include <cstring>
 #include <chrono>
-
 #include "Settings.h"
-#if defined(__has_include)
-#  if __has_include(<unistd.h>)
-#    include <unistd.h>
-#    if defined(sleep)
-#      undef sleep
-#    endif
-#  endif
-#endif
 #include "mbed.h"
+
+extern "C" {
+    int fileno(FILE *stream);
+    int fsync(int fd);
+}
+
 // Forward declarations for rotation helpers used below
 static size_t get_file_size_bytes(const char *path);
 static void rotate_if_needed(SdCardHandler *self);
@@ -23,12 +20,8 @@ static void flush_and_sync(FILE *f)
 {
   if (!f) return;
   fflush(f);
-#if defined(fileno)
   int fd = fileno(f);
-#  ifdef fsync
   if (fd >= 0) fsync(fd);
-#  endif
-#endif
 }
 
 SdCardHandler::SdCardHandler(ISerial& _serial)
