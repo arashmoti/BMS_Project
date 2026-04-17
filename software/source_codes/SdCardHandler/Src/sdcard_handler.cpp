@@ -4,14 +4,17 @@
 #include <cstdio>
 #include <cstring>
 #include <chrono>
-#include "mbed.h"
+
 #include "Settings.h"
 #if defined(__has_include)
 #  if __has_include(<unistd.h>)
 #    include <unistd.h>
+#    if defined(sleep)
+#      undef sleep
+#    endif
 #  endif
 #endif
-
+#include "mbed.h"
 // Forward declarations for rotation helpers used below
 static size_t get_file_size_bytes(const char *path);
 static void rotate_if_needed(SdCardHandler *self);
