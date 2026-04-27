@@ -13,9 +13,9 @@ public:
 
   virtual void allowedForceOn(bool newState) = 0;
 
-  virtual void setPreCharge(bool newState);
-  virtual bool setDisCharge(bool newState);
-  virtual void setCharge(bool newState);
+  virtual void setPreCharge(bool newState) = 0;
+  virtual bool setDisCharge(bool newState) = 0;
+  virtual void setCharge(bool newState) = 0;
 
   virtual void switchesDisableAll(void) = 0;
 };
