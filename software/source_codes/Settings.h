@@ -233,12 +233,21 @@
 
 // ########################################################################################################################################
 
-#define SERIAL_STACK_SIZE 0X400
-#define LOGGING_THREAD_STACK_SIZE 0X800
-#define MEASUREMENT_THREAD_STACK_SIZE 0X1000
-#define OPERATION_THREAD_STACK_SIZE 0X800
-#define TASKING_THREAD_STACK_SIZE 0X400
-#define BQ_THREAD_STACK_SIZE 0X1000
+#ifdef MBED_DEBUG
+#define SERIAL_STACK_SIZE             0x0800
+#define LOGGING_THREAD_STACK_SIZE     0x2000
+#define MEASUREMENT_THREAD_STACK_SIZE 0x2000
+#define OPERATION_THREAD_STACK_SIZE   0x1000
+#define TASKING_THREAD_STACK_SIZE     0x0800
+#define BQ_THREAD_STACK_SIZE          0x2000
+#else
+#define SERIAL_STACK_SIZE             0x0400
+#define LOGGING_THREAD_STACK_SIZE     0x0800
+#define MEASUREMENT_THREAD_STACK_SIZE 0x1000
+#define OPERATION_THREAD_STACK_SIZE   0x0800
+#define TASKING_THREAD_STACK_SIZE     0x0400
+#define BQ_THREAD_STACK_SIZE          0x1000
+#endif
 
 // ########################################################################################################################################
 // Central feature flags

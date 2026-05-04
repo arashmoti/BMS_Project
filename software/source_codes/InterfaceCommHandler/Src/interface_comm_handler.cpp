@@ -384,7 +384,9 @@ void InterfaceCommHandler::printToInterface(const char *format, ...)
     m_interfaceCommParams.u8TxIndex = 0;
 
     // Format into a local buffer (then trim to protocol payload size)
-    char buf[192];
+    // static: buf is mutex-protected by lock() above, so this is thread-safe
+    // and keeps 192 bytes off the calling thread's stack on every call.
+    static char buf[192];
     va_list vl;
     va_start(vl, format);
     int n = vsnprintf(buf, sizeof(buf), format, vl);

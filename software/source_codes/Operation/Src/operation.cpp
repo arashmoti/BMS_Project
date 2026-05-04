@@ -53,6 +53,49 @@ static constexpr int32_t kChargeAbsCurrentFloor_mA = 100;
 static bool s_wdt_diag_enable = true; // Set false to disable WDT diagnostics
 
 // #############################################################################################//
+static const char *battery_err_to_str(enBatteryErrors e)
+{
+	switch (e)
+	{
+	case SYS_OK:                                  return "SYS_OK";
+	case SYS_ERROR_CELL_OVER_VOLTAGE:             return "CELL_OVER_VOLTAGE";
+	case SYS_ERROR_CELL_UNDER_VOLTAGE:            return "CELL_UNDER_VOLTAGE";
+	case SYS_ERROR_CHG_OVER_CURRENT:              return "CHG_OVER_CURRENT";
+	case SYS_ERROR_DCHG_OVER_CURRENT:             return "DCHG_OVER_CURRENT";
+	case SYS_ERROR_CELL_OVER_TEMPERATURE_CHARGE:  return "OVER_TEMP_CHARGE";
+	case SYS_ERROR_CELL_OVER_TEMPERATURE_DISCHARGE: return "OVER_TEMP_DISCHARGE";
+	case SYS_ERROR_CELL_UNDER_TEMPERATURE_CHARGE: return "UNDER_TEMP_CHARGE";
+	case SYS_ERROR_CELL_UNDER_TEMPERATURE_DISCHARGE: return "UNDER_TEMP_DISCHARGE";
+	case SYS_ERROR_CELL_UNDER_TEMPERATURE_IDLE:   return "UNDER_TEMP_IDLE";
+	case SYS_ERROR_CELL_OVER_TEMPERATURE_IDLE:    return "OVER_TEMP_IDLE";
+	case SYS_ERROR_CHIPSET:                       return "CHIPSET_ERROR";
+	case SYS_ERROR_SHORT_CIRCUIT:                 return "SHORT_CIRCUIT";
+	case SYS_ERROR_CHIPSET_COMM:                  return "CHIPSET_COMM_LOSS";
+	case SYS_WARNING_NO_CHARGE:                   return "WARNING_NO_CHARGE";
+	case SYS_WARNING_NO_DISCHARGE:                return "WARNING_NO_DISCHARGE";
+	case SYS_WARNING_EEPROM_EMPTY:                return "WARNING_EEPROM_EMPTY";
+	default:                                      return "UNKNOWN";
+	}
+}
+
+static const char *cell_op_state_to_str(enPowerElecPackOperationCellState s)
+{
+	switch (s)
+	{
+	case PACK_STATE_ERROR_HARD_CELLVOLTAGE:   return "HARD_CELLVOLTAGE";
+	case PACK_STATE_ERROR_SOFT_CELLVOLTAGE:   return "SOFT_CELLVOLTAGE";
+	case PACK_STATE_ERROR_OVER_CURRENT:       return "OVER_CURRENT";
+	case PACK_STATE_ERROR_SHORT_CURRENT:      return "SHORT_CURRENT";
+	case PACK_STATE_ERROR_OVER_TEMPERATURE:   return "OVER_TEMPERATURE";
+	case PACK_STATE_NORMAL:                   return "NORMAL";
+	case PACK_STATE_ERROR_CHARGE_OVER_CURRENT: return "CHARGE_OVER_CURRENT";
+	case PACK_STATE_ERROR_UNDER_TEMPERATURE:  return "UNDER_TEMPERATURE";
+	case PACK_STATE_CRITICAL_TEMPERATURE:     return "CRITICAL_TEMPERATURE";
+	default:                                  return "UNKNOWN";
+	}
+}
+
+// #############################################################################################//
 // Human-readable BMS state string
 static const char *bms_state_to_str(enBmsState s)
 {
@@ -155,11 +198,14 @@ void Operation::opThread()
 	enPowerElecPackOperationCellState cellOpState = m_ptrPowerElecPackInfoConfig->packOperationCellState;
 	g_packInfoMutex.unlock();
 
-		if (packErrState == SYS_ERROR_CHIPSET_COMM || 
-			cellOpState == PACK_STATE_ERROR_OVER_TEMPERATURE || 
+		if (packErrState == SYS_ERROR_CHIPSET_COMM ||
+			cellOpState == PACK_STATE_ERROR_OVER_TEMPERATURE ||
 			cellOpState == PACK_STATE_ERROR_UNDER_TEMPERATURE ||
 			cellOpState == PACK_STATE_CRITICAL_TEMPERATURE)
 		{
+			InterfaceCommHandler::getInstance()->printToInterface(
+				"[ERROR] Entering OP_STATE_ERROR — errState=%s cellOpState=%s\r\n",
+				battery_err_to_str(packErrState), cell_op_state_to_str(cellOpState));
 			operationStateSetNewState(OP_STATE_ERROR);
 		}
 		else if (inverterState == INVERTER_FAULT)
@@ -593,18 +639,23 @@ static constexpr uint32_t kOpStateLogMs = 1000;
 		if (timerDelay1ms(&_u32DebugPrintLastTick110, kOpStateLogMs))
 			InterfaceCommHandler::getInstance()->printToInterface("----- OP_STATE_ERROR: bmsState: %s \r\n", bms_state_to_str(bmsState));
 
-		if (m_operationalStateLastState != m_operationalStateCurrentState)
-			m_u32StateErrorDisplayTime = (uint32_t)(OPERATION_GET_TICK(m_opManagerTim));
-
 		// Shutdown Policy:
 		// - Standard OT (60C) and UT (-20C): Stay ON to alert (Infinite Wait/No Shutdown).
 		// - Critical OT (>100C) or System Faults: Power Down after timeout.
 		// - Recovery: If state returns to NORMAL, go back to LOAD_ENABLED.
-		
+
 		g_packInfoMutex.lock();
 		enPowerElecPackOperationCellState cellOpState = m_ptrPowerElecPackInfoConfig->packOperationCellState;
 		enBatteryErrors errState = m_ptrPowerElecPackInfoConfig->packBatteryWarErrState;
 		g_packInfoMutex.unlock();
+
+		if (m_operationalStateLastState != m_operationalStateCurrentState)
+		{
+			m_u32StateErrorDisplayTime = (uint32_t)(OPERATION_GET_TICK(m_opManagerTim));
+			InterfaceCommHandler::getInstance()->printToInterface(
+				"[ERROR] *** FAULT DETAILS *** errState=%s cellOpState=%s bmsState=%s\r\n",
+				battery_err_to_str(errState), cell_op_state_to_str(cellOpState), bms_state_to_str(bmsState));
+		}
 		
 		// DEBUG: Log the decision every second
 		static uint32_t _u32ShutdownDbgTick = 0;

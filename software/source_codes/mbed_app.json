@@ -1,5 +1,5 @@
 {
-    "macros": [],
+    "macros": ["MBED_TRAP_ERRORS_ENABLED=0"],
     "config": {
         "present": 1,
         "led-pin": {
