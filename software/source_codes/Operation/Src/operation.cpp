@@ -203,9 +203,6 @@ void Operation::opThread()
 			cellOpState == PACK_STATE_ERROR_UNDER_TEMPERATURE ||
 			cellOpState == PACK_STATE_CRITICAL_TEMPERATURE)
 		{
-			InterfaceCommHandler::getInstance()->printToInterface(
-				"[ERROR] Entering OP_STATE_ERROR — errState=%s cellOpState=%s\r\n",
-				battery_err_to_str(packErrState), cell_op_state_to_str(cellOpState));
 			operationStateSetNewState(OP_STATE_ERROR);
 		}
 		else if (inverterState == INVERTER_FAULT)
